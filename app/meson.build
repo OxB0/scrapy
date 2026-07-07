@@ -147,6 +147,9 @@ endif
 if host_machine.system() == 'windows'
     dependencies += cc.find_library('mingw32')
     dependencies += cc.find_library('ws2_32')
+else
+    # The toolbar icons use sinf/cosf, which need the math library on Linux.
+    dependencies += cc.find_library('m', required: false)
 endif
 
 check_functions = [
