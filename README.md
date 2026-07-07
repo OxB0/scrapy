@@ -1,3 +1,15 @@
+<h1 align="center">scrapy</h1>
+
+<p align="center"><i>scrcpy, with the toolbar, terminal, and multi-device handling it always needed.</i></p>
+
+<p align="center">
+  <img src="doc/scrapy-toolbar.png" alt="Labelled toolbar" height="320">
+  &nbsp;&nbsp;
+  <img src="doc/scrapy-picker.png" alt="Device picker" height="320">
+</p>
+
+---
+
 scrapy is my personal fix for the things that annoy me about scrcpy, including:
 
 - Not working when two devices are connected (and having to reopen it on every disconnect)
@@ -9,17 +21,7 @@ scrapy is my personal fix for the things that annoy me about scrcpy, including:
 
 I called it scrapy because imo saying screen copy every time is just too long...
 
-So, in nicer terms:
-
-scrapy is a fork of [scrcpy](https://github.com/Genymobile/scrcpy) that adds an on-screen control layer to the mirror window, so you can drive the device without memorizing keyboard shortcuts, as well as adding some nice features that are very usefull.
-
-And here are some images for the curious:
-
-![Toolbar with every button labelled](doc/scrapy-toolbar.png)
-
-When more than one device is connected, scrapy lets you pick which one to mirror (and it reconnects automatically instead of quitting when a device is unplugged):
-
-![Choosing between two connected devices](doc/scrapy-picker.png)
+So, in nicer terms: scrapy is a fork of [scrcpy](https://github.com/Genymobile/scrcpy) that adds an on-screen control layer to the mirror window, so you can drive the device without memorizing keyboard shortcuts. When more than one device is connected it lets you pick which one to mirror, and it reconnects automatically instead of quitting when a device is unplugged.
 
 You can also edit the config file that gets created after the first run to change some of the default settings and looks:
 
