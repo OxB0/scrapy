@@ -16,6 +16,7 @@
 struct pk_dev {
     char serial[128];
     char model[128];
+    char transport[16]; // adb transport id
 };
 
 static const char *
@@ -108,6 +109,7 @@ pk_list(struct pk_dev *out, int max, int *pending) {
                     snprintf(out[count].serial, sizeof(out[count].serial), "%s",
                              serial);
                     out[count].model[0] = '\0';
+                    out[count].transport[0] = '\0';
                     char *m = strstr(line, "model:");
                     if (m) {
                         sscanf(m + 6, "%127[^ \t\r]", out[count].model);
@@ -116,6 +118,10 @@ pk_list(struct pk_dev *out, int max, int *pending) {
                                 *p = ' ';
                             }
                         }
+                    }
+                    char *t = strstr(line, "transport_id:");
+                    if (t) {
+                        sscanf(t + 13, "%15[^ \t\r]", out[count].transport);
                     }
                     count++;
                 } else if (!strcmp(state, "offline")

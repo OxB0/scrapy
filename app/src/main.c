@@ -23,6 +23,8 @@
 #ifdef _WIN32
 #include <windows.h>
 #include "util/str.h"
+#else
+#include <unistd.h>
 #endif
 
 static int
@@ -97,11 +99,9 @@ main_scrcpy(int argc, char *argv[]) {
     // Picker mode: when no device was requested on the command line, show a
     // startup picker (opens a window immediately, waits when nothing is
     // connected, auto-connects a lone device, lets the user choose when several
-    // are present). Then loop: if the device disconnects, drop back to the
-    // picker so the app stays open and reconnects automatically. Closing either
-    // window quits.
+    // are present). On disconnect, re-exec the process so the picker starts
+    // fresh with clean adb state.
     bool picker_mode = !args.opts.serial;
-    int quick_fail_streak = 0;
     for (;;) {
         if (picker_mode) {
             char *picked = NULL;
@@ -115,34 +115,42 @@ main_scrcpy(int argc, char *argv[]) {
             }
         }
 
-        Uint64 session_start = SDL_GetTicks();
 #ifdef HAVE_USB
         ret = args.opts.otg ? scrcpy_otg(&args.opts) : scrcpy(&args.opts);
 #else
         ret = scrcpy(&args.opts);
 #endif
-        bool quick = SDL_GetTicks() - session_start < 3000;
 
-        // Any non-SUCCESS exit in picker mode means the device is gone: a clean
-        // unplug returns DISCONNECTED, but an abrupt one races into a demuxer/
-        // controller error (FAILURE). Both should return to the picker so the
-        // app keeps running across reconnects. Only give up if connections keep
-        // failing immediately (a broken setup) — otherwise we'd loop invisibly.
+        // On disconnect in picker mode, re-exec the whole process so adb
+        // state (transport ids, server handle, etc.) starts completely clean.
         if (picker_mode && ret != SCRCPY_EXIT_SUCCESS) {
-            free((void *) args.opts.serial);
-            args.opts.serial = NULL;
-            SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST); // drop stale events
-            if (ret == SCRCPY_EXIT_FAILURE && quick) {
-                if (++quick_fail_streak >= 3) {
-                    break; // repeated immediate failures: stop retrying
+            sc_main_thread_destroy();
+            net_cleanup();
+
+#ifdef _WIN32
+            char self[1024];
+            if (GetModuleFileNameA(NULL, self, sizeof(self))) {
+                STARTUPINFOA si;
+                memset(&si, 0, sizeof(si));
+                si.cb = sizeof(si);
+                PROCESS_INFORMATION pi;
+                char *cmdline = strdup(GetCommandLineA());
+                if (cmdline && CreateProcessA(self, cmdline, NULL, NULL,
+                        FALSE, 0, NULL, NULL, &si, &pi)) {
+                    CloseHandle(pi.hProcess);
+                    CloseHandle(pi.hThread);
+                    free(cmdline);
+                    return SCRCPY_EXIT_SUCCESS;
                 }
-                SDL_Delay(700); // back off before retrying
-            } else {
-                quick_fail_streak = 0; // a real session ran; keep reconnecting
+                free(cmdline);
             }
-            continue;
+#else
+            execv(argv[0], argv);
+#endif
+            // re-exec failed, fall through to normal exit
+            break;
         }
-        break; // user quit, or a fixed -s device: done
+        break;
     }
 
     sc_main_thread_destroy();
