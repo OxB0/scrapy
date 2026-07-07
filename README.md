@@ -3,11 +3,7 @@
 <p align="center"><i>scrcpy, with the toolbar, terminal, and multi-device handling it always needed.</i></p>
 
 <p align="center">
-  <img src="doc/scrapy-shell.png" alt="scrapy: labelled toolbar and the built-in terminal" width="88%">
-</p>
-
-<p align="center">
-  <img src="doc/scrapy-toolbar.png" alt="Labelled toolbar" height="300">
+  <img src="doc/scrapy-shell.png" alt="Labelled toolbar" height="300">
   &nbsp;&nbsp;
   <img src="doc/scrapy-picker.png" alt="Device picker" height="300">
 </p>
