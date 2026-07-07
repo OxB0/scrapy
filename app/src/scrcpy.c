@@ -25,6 +25,7 @@
 #include "mouse_sdk.h"
 #include "recorder.h"
 #include "screen.h"
+#include "shell.h"
 #include "sdl_hints.h"
 #include "server.h"
 #include "uhid/gamepad_uhid.h"
@@ -767,6 +768,9 @@ aoa_complete:
         }
         screen_initialized = true;
 
+        // On-screen terminal drawer targets this device.
+        sc_shell_init(serial);
+
         if (options->video_playback) {
             struct sc_frame_source *src = &s->video_decoder.frame_source;
             if (options->video_buffer) {
@@ -983,6 +987,8 @@ end:
         sc_screen_join(&s->screen);
         sc_screen_destroy(&s->screen);
     }
+
+    sc_shell_destroy();
 
     if (controller_started) {
         sc_controller_join(&s->controller);

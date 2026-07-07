@@ -21,6 +21,7 @@ enum {
     SC_EVENT_AOA_OPEN_ERROR,
     SC_EVENT_DISCONNECTED_ICON_LOADED,
     SC_EVENT_DISCONNECTED_TIMEOUT,
+    SC_EVENT_SHELL_UPDATE, // shell output/input changed: repaint the overlay
 };
 
 bool

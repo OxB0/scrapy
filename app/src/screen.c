@@ -7,6 +7,8 @@
 #include "events.h"
 #include "icon.h"
 #include "options.h"
+#include "shell.h"
+#include "toolbar.h"
 #include "util/log.h"
 #include "util/sdl.h"
 
@@ -14,12 +16,21 @@
 
 #define DOWNCAST(SINK) container_of(SINK, struct sc_screen, frame_sink)
 
+static struct sc_size
+get_optimal_size(struct sc_size current_size, struct sc_size content_size,
+                 bool within_display_bounds);
+
 static void
 set_aspect_ratio(struct sc_screen *screen, struct sc_size content_size) {
     assert(content_size.width && content_size.height);
 
     if (screen->window_aspect_ratio_lock) {
-        float ar = (float) content_size.width / content_size.height;
+        // Include the fixed-width toolbar gutter so the VIDEO area (the window
+        // minus the gutter) keeps the content aspect ratio at the natural size,
+        // rather than the toolbar stealing width from the video.
+        struct sc_size nat = get_optimal_size(content_size, content_size, true);
+        float tb = (float) sc_toolbar_width();
+        float ar = ((float) nat.width + tb) / (float) nat.height;
         bool ok = SDL_SetWindowAspectRatio(screen->window, ar, ar);
         if (!ok) {
             LOGW("Could not set window aspect ratio: %s", SDL_GetError());
@@ -227,8 +238,18 @@ sc_screen_update_content_rect(struct sc_screen *screen) {
     bool is_icon = !screen->video || screen->disconnected;
 
     struct sc_size window_size = sc_sdl_get_window_size(screen->window);
+    // Reserve a gutter on the right for the on-screen toolbar, so the video is
+    // fit beside it rather than underneath it.
+    // Reserve the toolbar gutter and (when open) the terminal panel on the
+    // right, so the video is fit to their left.
+    unsigned reserve = sc_toolbar_width() + sc_shell_reserved_width(screen);
+    if (window_size.width > reserve) {
+        window_size.width -= reserve;
+    }
     compute_content_rect(window_size, screen->content_size, is_icon,
                          screen->render_fit, &screen->rect);
+    // The toolbar sits in a left gutter; shift the video past it.
+    screen->rect.x += sc_toolbar_width();
 }
 
 // render the texture to the renderer
@@ -238,6 +259,11 @@ sc_screen_update_content_rect(struct sc_screen *screen) {
 static void
 sc_screen_render(struct sc_screen *screen, bool update_content_rect) {
     assert(screen->window_shown);
+
+    // Advance the shell drawer slide; recompute the content rect while it moves.
+    if (sc_shell_step_anim()) {
+        update_content_rect = true;
+    }
 
     if (update_content_rect) {
         sc_screen_update_content_rect(screen);
@@ -306,6 +332,8 @@ sc_screen_render(struct sc_screen *screen, bool update_content_rect) {
     }
 
 end:
+    sc_toolbar_render(screen);
+    sc_shell_render(screen);
     sc_sdl_render_present(renderer);
 }
 
@@ -747,6 +775,11 @@ sc_screen_show_initial_window(struct sc_screen *screen) {
         sc_screen_track_resize(screen, window_size);
     }
 
+    // Widen the window by the toolbar gutter so the video keeps its natural
+    // size and the buttons sit in added space beside it (window = video width +
+    // toolbar width), instead of the toolbar shrinking the mirror.
+    window_size.width += sc_toolbar_width();
+
     assert(is_windowed(screen));
     set_aspect_ratio(screen, screen->content_size);
     sc_sdl_set_window_size(screen->window, window_size);
@@ -827,16 +860,21 @@ resize_for_content(struct sc_screen *screen, struct sc_size old_content_size,
                    struct sc_size new_content_size) {
     assert(screen->video);
 
+    unsigned tb = sc_toolbar_width();
     struct sc_size target_size = new_content_size;
     if (!screen->flex_display) {
         struct sc_size window_size = sc_sdl_get_window_size(screen->window);
-        // Scale proportionally
-        target_size.width = (uint32_t) window_size.width * target_size.width
+        // Scale the VIDEO area (window minus the toolbar gutter) proportionally.
+        unsigned vid_w = window_size.width > tb ? window_size.width - tb
+                                                : window_size.width;
+        target_size.width = (uint32_t) vid_w * target_size.width
                           / old_content_size.width;
         target_size.height = (uint32_t) window_size.height * target_size.height
                            / old_content_size.height;
     }
     target_size = get_optimal_size(target_size, new_content_size, true);
+    // Add the toolbar gutter back so the video keeps its natural size.
+    target_size.width += tb;
     assert(is_windowed(screen));
     set_aspect_ratio(screen, new_content_size);
     sc_sdl_set_window_size(screen->window, target_size);
@@ -1112,6 +1150,11 @@ sc_disconnect_on_timeout(struct sc_disconnect *d, void *userdata) {
 
 void
 sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
+    // The terminal drawer captures keyboard/text input while open.
+    if (sc_shell_handle_event(screen, event)) {
+        return;
+    }
+
     switch (event->type) {
         case SC_EVENT_OPEN_WINDOW:
             sc_screen_show_initial_window(screen);
@@ -1130,6 +1173,11 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
             }
             return;
         }
+        case SC_EVENT_SHELL_UPDATE:
+            // Shell output/input arrived on another thread: repaint so the
+            // terminal stays live even when the mirror is static.
+            sc_screen_render(screen, false);
+            return;
         case SDL_EVENT_WINDOW_EXPOSED:
             sc_screen_render(screen, true);
             return;
@@ -1183,6 +1231,15 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
             }
 
             return;
+    }
+
+    // On-screen toolbar: a left click on a button performs its action and is
+    // not forwarded to the device.
+    if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN
+            && event->button.button == SDL_BUTTON_LEFT
+            && sc_toolbar_click(screen, event->button.x, event->button.y)) {
+        sc_screen_render(screen, false);
+        return;
     }
 
     if (sc_screen_is_relative_mode(screen)

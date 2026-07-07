@@ -147,6 +147,13 @@ sc_process_execute_p(const char *const argv[], HANDLE *handle, unsigned flags,
     if (!inherit_stdout && !inherit_stderr) {
         // DETACHED_PROCESS to disable stdin, stdout and stderr
         dwCreationFlags |= DETACHED_PROCESS;
+    } else {
+        // We are a GUI app (no console of our own). Without this, spawning a
+        // console-subsystem child like adb — while inheriting its stdout/stderr
+        // through pipes — makes Windows allocate a brand-new console window that
+        // flashes on screen. CREATE_NO_WINDOW gives the child a hidden console
+        // so the pipes still work and nothing pops up.
+        dwCreationFlags |= CREATE_NO_WINDOW;
     }
     BOOL ok = CreateProcessW(NULL, wide, NULL, NULL, bInheritHandles,
                              dwCreationFlags, NULL, NULL, &si.StartupInfo, &pi);

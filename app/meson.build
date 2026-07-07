@@ -33,7 +33,10 @@ src = [
     'src/scrcpy.c',
     'src/screen.c',
     'src/sdl_hints.c',
+    'src/picker.c',
     'src/server.c',
+    'src/shell.c',
+    'src/toolbar.c',
     'src/texture.c',
     'src/version.c',
     'src/hid/hid_gamepad.c',
@@ -190,10 +193,15 @@ configure_file(configuration: conf, output: 'config.h')
 
 src_dir = include_directories('src')
 
+# On Windows, build as a GUI app so no console window pops up: the startup
+# device picker (src/picker.c) provides the UI instead.
+scrcpy_win_subsystem = host_machine.system() == 'windows' ? 'windows' : 'console'
+
 executable('scrcpy', src,
            dependencies: dependencies,
            include_directories: src_dir,
            install: true,
+           win_subsystem: scrcpy_win_subsystem,
            c_args: [])
 
 # <https://mesonbuild.com/Builtin-options.html#directories>

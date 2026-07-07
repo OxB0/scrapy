@@ -10,6 +10,7 @@
 #include "cli.h"
 #include "events.h"
 #include "options.h"
+#include "picker.h"
 #include "scrcpy.h"
 #ifdef HAVE_USB
 # include "usb/scrcpy_otg.h"
@@ -89,11 +90,43 @@ main_scrcpy(int argc, char *argv[]) {
         goto net_cleanup;
     }
 
+    // Picker mode: when no device was requested on the command line, show a
+    // startup picker (opens a window immediately, waits when nothing is
+    // connected, auto-connects a lone device, lets the user choose when several
+    // are present). Then loop: if the device disconnects, drop back to the
+    // picker so the app stays open and reconnects automatically. Closing either
+    // window quits.
+    bool picker_mode = !args.opts.serial;
+    for (;;) {
+        if (picker_mode) {
+            char *picked = NULL;
+            if (!sc_picker_run(&picked)) {
+                // User closed the picker without choosing a device.
+                ret = SCRCPY_EXIT_SUCCESS;
+                break;
+            }
+            if (picked) {
+                args.opts.serial = picked;
+            }
+        }
+
 #ifdef HAVE_USB
-    ret = args.opts.otg ? scrcpy_otg(&args.opts) : scrcpy(&args.opts);
+        ret = args.opts.otg ? scrcpy_otg(&args.opts) : scrcpy(&args.opts);
 #else
-    ret = scrcpy(&args.opts);
+        ret = scrcpy(&args.opts);
 #endif
+
+        if (picker_mode && ret == SCRCPY_EXIT_DISCONNECTED) {
+            // Device unplugged: forget it and return to the picker, which waits
+            // for a device to come back and reconnects.
+            free((void *) args.opts.serial);
+            args.opts.serial = NULL;
+            // Drop any stale queued events from the finished session.
+            SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
+            continue;
+        }
+        break; // user quit, an error, or a fixed -s device: done
+    }
 
     sc_main_thread_destroy();
 
