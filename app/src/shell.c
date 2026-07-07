@@ -13,6 +13,7 @@
 
 #include "adb/adb.h"
 #include "apps.h"
+#include "userconf.h"
 #include "events.h"
 #include "font8x16_basic.h"
 #include "screen.h"
@@ -24,16 +25,21 @@
 #define SC_SH_LINES 600     // scrollback ring size
 #define SC_SH_COLS  512     // max stored chars per line
 #define SC_SH_INPUT 1024
-#define SC_SH_TARGET 600    // width the window grows by when the drawer opens
 #define SC_SH_MIN    300    // minimum drawer width (video-fit reservation)
 #define SC_SH_MAXDR  400    // max wrapped display rows built per frame
 #define SC_SH_FONT_MUL 1.8f // font size: pixels per source pixel (at scale 1)
+
+// Width the window grows by when the drawer opens (config override, else 600).
+static int
+sh_target(void) {
+    return sc_conf.shell_width > 0 ? sc_conf.shell_width : 600;
+}
 
 // Character columns that fit across the panel. The device is told this via
 // `stty cols` so it wraps output itself; the renderer wraps to the same width.
 static int
 sh_wrap_cols(void) {
-    int cols = (int) ((SC_SH_TARGET - 16) / (8.f * SC_SH_FONT_MUL));
+    int cols = (int) ((sh_target() - 16) / (8.f * SC_SH_FONT_MUL));
     return cols < 1 ? 1 : cols;
 }
 
@@ -334,15 +340,15 @@ sc_shell_toggle(struct sc_screen *screen) {
         // width, so the video area stays identical (no reflow, no lag). Clear
         // any aspect-ratio lock first, or SDL fights the width change.
         SDL_SetWindowAspectRatio(screen->window, 0.f, 0.f);
-        g.anim = SC_SH_TARGET;
-        SDL_SetWindowSize(screen->window, w + SC_SH_TARGET, h);
+        g.anim = SC_SH_MIN;
+        SDL_SetWindowSize(screen->window, w + sh_target(), h);
         if (g.pid == SC_PROCESS_NONE) {
             shell_start();
         }
         SDL_StartTextInput(screen->window);
     } else {
         g.anim = 0;
-        int nw = w - SC_SH_TARGET;
+        int nw = w - sh_target();
         SDL_SetWindowSize(screen->window, nw < 200 ? 200 : nw, h);
         SDL_StopTextInput(screen->window);
     }

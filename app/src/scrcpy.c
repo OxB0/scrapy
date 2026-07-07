@@ -28,6 +28,7 @@
 #include "recorder.h"
 #include "screen.h"
 #include "shell.h"
+#include "toolbar.h"
 #include "sdl_hints.h"
 #include "server.h"
 #include "uhid/gamepad_uhid.h"
@@ -770,6 +771,8 @@ aoa_complete:
         }
         screen_initialized = true;
 
+        // Apply toolbar config (visible buttons, pin-on-top default).
+        sc_toolbar_init(&s->screen);
         // On-screen terminal drawer targets this device.
         sc_shell_init(serial);
         // Screenshot / screen-record buttons target this device.

@@ -11,6 +11,7 @@
 #endif
 
 #include "adb/adb.h"
+#include "userconf.h"
 #include "events.h"
 #include "font8x8_basic.h"
 #include "screen.h"
@@ -18,7 +19,6 @@
 #include "util/log.h"
 #include "util/process.h"
 
-#define SC_APPS_W    600   // width the window grows by when the drawer opens
 #define SC_APPS_MIN  320   // minimum drawer width (video-fit reservation)
 #define SC_APPS_MAX  512
 #define SC_APPS_ROWH 30    // list row height (logical px)
@@ -30,6 +30,12 @@
 #define SC_APPS_STEP 40    // density adjustment step (dpi)
 
 enum { SC_PAGE_APPS = 0, SC_PAGE_DENSITY = 1 };
+
+// Width the window grows by when the drawer opens (config override, else 600).
+static int
+apps_target(void) {
+    return sc_conf.apps_width > 0 ? sc_conf.apps_width : 600;
+}
 
 struct sc_apps {
     bool ready;
@@ -339,8 +345,8 @@ sc_apps_toggle(struct sc_screen *screen) {
     int w, h;
     SDL_GetWindowSize(screen->window, &w, &h);
     SDL_SetWindowAspectRatio(screen->window, 0.f, 0.f);
-    g.anim = SC_APPS_W;
-    SDL_SetWindowSize(screen->window, w + SC_APPS_W, h);
+    g.anim = SC_APPS_MIN;
+    SDL_SetWindowSize(screen->window, w + apps_target(), h);
     SDL_StartTextInput(screen->window); // for the app search box
     g.blink_timer = SDL_AddTimer(500, blink_cb, NULL);
 
@@ -365,7 +371,7 @@ sc_apps_close(struct sc_screen *screen) {
     SDL_StopTextInput(screen->window);
     int w, h;
     SDL_GetWindowSize(screen->window, &w, &h);
-    int nw = w - SC_APPS_W;
+    int nw = w - apps_target();
     SDL_SetWindowSize(screen->window, nw < 200 ? 200 : nw, h);
 }
 
@@ -821,6 +827,12 @@ sc_apps_init(const char *serial) {
     g.hover = -1;
     sc_mutex_init(&g.mutex);
     g.ready = true;
+
+    // Apply a configured default display density on connect.
+    if (sc_conf.default_density > 0) {
+        detach(set_density_thread, "sc-defdens",
+               (void *) (intptr_t) sc_conf.default_density);
+    }
 }
 
 void

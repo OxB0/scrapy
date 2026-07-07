@@ -35,6 +35,7 @@ src = [
     'src/sdl_hints.c',
     'src/apps.c',
     'src/capture.c',
+    'src/userconf.c',
     'src/picker.c',
     'src/server.c',
     'src/shell.c',

@@ -1,6 +1,7 @@
 #include "capture.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <SDL3/SDL.h>
@@ -10,6 +11,7 @@
 #endif
 
 #include "adb/adb.h"
+#include "userconf.h"
 #include "events.h"
 #include "util/log.h"
 #include "util/process.h"
@@ -19,6 +21,7 @@ static char g_serial[128];
 static bool g_ready;
 
 static SDL_AtomicInt g_recording;
+static SDL_AtomicInt g_awake; // device keep-awake state (mirrors the device)
 static sc_pid g_rec_pid;
 static char g_rec_devpath[256];
 static char g_rec_pcpath[600];
@@ -42,12 +45,16 @@ capture_adb(void) {
 static void
 home_path(char *buf, size_t n, const char *name) {
 #ifdef _WIN32
-    const char *h = getenv("USERPROFILE");
     char sep = '\\';
+    const char *h = getenv("USERPROFILE");
 #else
-    const char *h = getenv("HOME");
     char sep = '/';
+    const char *h = getenv("HOME");
 #endif
+    // A configured capture_dir overrides the home folder.
+    if (sc_conf.capture_dir[0]) {
+        h = sc_conf.capture_dir;
+    }
     if (!h || !*h) {
         h = ".";
     }
@@ -113,6 +120,41 @@ run_adb(const char *const *tail) {
         return false;
     }
     return sc_process_wait(pid, true) == 0;
+}
+
+// Like run_adb but captures stdout into `buf`. Safe here because the adb
+// server is already running by the time capture is used (mirror connected).
+static int
+run_adb_out(const char *const *tail, char *buf, int bufsize) {
+    const char *adb = capture_adb();
+    if (!adb) {
+        return 0;
+    }
+    const char *argv[24];
+    int n = 0;
+    argv[n++] = adb;
+    if (g_serial[0]) {
+        argv[n++] = "-s";
+        argv[n++] = g_serial;
+    }
+    for (int i = 0; tail[i] && n < 22; ++i) {
+        argv[n++] = tail[i];
+    }
+    argv[n] = NULL;
+    sc_pid pid;
+    sc_pipe pout;
+    if (sc_process_execute_p(argv, &pid, 0, NULL, &pout, NULL)
+            != SC_PROCESS_SUCCESS) {
+        return 0;
+    }
+    ssize_t r = sc_pipe_read_all(pout, buf, bufsize - 1);
+    sc_pipe_close(pout);
+    sc_process_wait(pid, true);
+    if (r < 0) {
+        r = 0;
+    }
+    buf[r] = '\0';
+    return (int) r;
 }
 
 // --- screenshot ---
@@ -284,6 +326,54 @@ sc_capture_recording(void) {
     return SDL_GetAtomicInt(&g_recording) != 0;
 }
 
+// --- keep awake ---
+
+static int
+stayawake_thread(void *userdata) {
+    int on = (int) (intptr_t) userdata;
+    const char *t[] = {"shell", "svc", "power", "stayon",
+                       on ? "true" : "false", NULL};
+    bool ok = run_adb(t);
+    if (ok) {
+        SDL_SetAtomicInt(&g_awake, on ? 1 : 0);
+        set_toast(on ? "Screen will stay awake" : "Screen can sleep again");
+    } else {
+        set_toast("Could not change keep-awake");
+    }
+    return 0;
+}
+
+// Read the device's current stay-awake setting so the button reflects reality.
+static int
+awake_query_thread(void *userdata) {
+    (void) userdata;
+    char buf[128];
+    const char *t[] = {"shell", "settings", "get", "global",
+                       "stay_on_while_plugged_in", NULL};
+    int n = run_adb_out(t, buf, sizeof(buf));
+    int val = (n > 0) ? atoi(buf) : 0; // 0 = off, nonzero bitmask = on
+    SDL_SetAtomicInt(&g_awake, val != 0 ? 1 : 0);
+    sc_push_event(SC_EVENT_SHELL_UPDATE); // repaint so the button reflects it
+    return 0;
+}
+
+void
+sc_capture_stay_awake(bool on) {
+    if (!g_ready) {
+        return;
+    }
+    SDL_Thread *t = SDL_CreateThread(stayawake_thread, "sc-awake",
+                                     (void *) (intptr_t) (on ? 1 : 0));
+    if (t) {
+        SDL_DetachThread(t);
+    }
+}
+
+bool
+sc_capture_awake_is_on(void) {
+    return SDL_GetAtomicInt(&g_awake) != 0;
+}
+
 // --- lifecycle ---
 
 void
@@ -294,9 +384,16 @@ sc_capture_init(const char *serial) {
         g_serial[0] = '\0';
     }
     SDL_SetAtomicInt(&g_recording, 0);
+    SDL_SetAtomicInt(&g_awake, 0);
     g_toast_until = 0;
     sc_mutex_init(&g_toast_mutex);
     g_ready = true;
+
+    // Read the device's real keep-awake state so the button starts correct.
+    SDL_Thread *t = SDL_CreateThread(awake_query_thread, "sc-awake-q", NULL);
+    if (t) {
+        SDL_DetachThread(t);
+    }
 }
 
 void

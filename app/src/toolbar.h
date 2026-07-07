@@ -7,6 +7,10 @@
 
 struct sc_screen;
 
+// Build the visible button set from config and apply pin-on-top default.
+void
+sc_toolbar_init(struct sc_screen *screen);
+
 // Width (logical px) of the toolbar gutter reserved on the right of the window.
 int
 sc_toolbar_width(void);

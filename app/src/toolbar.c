@@ -8,6 +8,7 @@
 #include "android/keycodes.h"
 #include "apps.h"
 #include "capture.h"
+#include "userconf.h"
 #include "control_msg.h"
 #include "controller.h"
 #include "font8x8_basic.h"
@@ -23,7 +24,7 @@
 enum sc_tb_icon {
     IC_BACK, IC_HOME, IC_RECENTS, IC_MENU, IC_NOTIF,
     IC_VOLUP, IC_VOLDN, IC_ROTATE, IC_POWER, IC_PIN, IC_SHELL,
-    IC_SHOT, IC_REC, IC_APPS,
+    IC_SHOT, IC_REC, IC_APPS, IC_AWAKE,
 };
 
 enum sc_tb_action {
@@ -36,6 +37,7 @@ enum sc_tb_action {
     SC_TB_SHOT,         // save a screenshot to the PC
     SC_TB_REC,          // toggle screen recording
     SC_TB_APPS,         // toggle the apps/density drawer
+    SC_TB_AWAKE,        // toggle keep-screen-awake
 };
 
 struct sc_tb_button {
@@ -43,35 +45,99 @@ struct sc_tb_button {
     enum sc_tb_action action;
     enum android_keycode keycode; // for SC_TB_KEY
     const char *label;
+    const char *name; // config token
 };
 
 // Toggle state for the pin (always-on-top) button.
 static bool sc_tb_pinned = false;
 
-static const struct sc_tb_button sc_toolbar[] = {
-    {IC_PIN,     SC_TB_PIN,         0,                    "Pin on top"},
-    {IC_SHELL,   SC_TB_SHELL,       0,                    "Shell"},
-    {IC_APPS,    SC_TB_APPS,        0,                    "Apps & density"},
-    {IC_SHOT,    SC_TB_SHOT,        0,                    "Screenshot"},
-    {IC_REC,     SC_TB_REC,         0,                    "Record"},
-    {IC_BACK,    SC_TB_BACK_SCREEN, 0,                    "Back"},
-    {IC_HOME,    SC_TB_KEY,         AKEYCODE_HOME,        "Home"},
-    {IC_RECENTS, SC_TB_KEY,         AKEYCODE_APP_SWITCH,  "Recents"},
-    {IC_MENU,    SC_TB_KEY,         AKEYCODE_MENU,        "Menu"},
-    {IC_NOTIF,   SC_TB_NOTIF,       0,                    "Notifications"},
-    {IC_VOLUP,   SC_TB_KEY,         AKEYCODE_VOLUME_UP,   "Volume up"},
-    {IC_VOLDN,   SC_TB_KEY,         AKEYCODE_VOLUME_DOWN, "Volume down"},
-    {IC_ROTATE,  SC_TB_ROTATE,      0,                    "Rotate"},
-    {IC_POWER,   SC_TB_KEY,         AKEYCODE_POWER,       "Power"},
+static const struct sc_tb_button sc_toolbar_all[] = {
+    {IC_PIN,     SC_TB_PIN,         0,               "Pin on top",   "pin"},
+    {IC_AWAKE,   SC_TB_AWAKE,       0,               "Keep awake",   "awake"},
+    {IC_SHELL,   SC_TB_SHELL,       0,               "Shell",        "shell"},
+    {IC_APPS,    SC_TB_APPS,        0,               "Apps & density", "apps"},
+    {IC_SHOT,    SC_TB_SHOT,        0,               "Screenshot",   "screenshot"},
+    {IC_REC,     SC_TB_REC,         0,               "Record",       "record"},
+    {IC_BACK,    SC_TB_BACK_SCREEN, 0,               "Back",         "back"},
+    {IC_HOME,    SC_TB_KEY,         AKEYCODE_HOME,   "Home",         "home"},
+    {IC_RECENTS, SC_TB_KEY,      AKEYCODE_APP_SWITCH, "Recents",     "recents"},
+    {IC_MENU,    SC_TB_KEY,         AKEYCODE_MENU,   "Menu",         "menu"},
+    {IC_NOTIF,   SC_TB_NOTIF,       0,            "Notifications", "notifications"},
+    {IC_VOLUP,   SC_TB_KEY,      AKEYCODE_VOLUME_UP,  "Volume up",   "volup"},
+    {IC_VOLDN,   SC_TB_KEY,    AKEYCODE_VOLUME_DOWN,  "Volume down", "voldown"},
+    {IC_ROTATE,  SC_TB_ROTATE,      0,               "Rotate",       "rotate"},
+    {IC_POWER,   SC_TB_KEY,         AKEYCODE_POWER,  "Power",        "power"},
 };
 
-#define SC_TB_COUNT (sizeof(sc_toolbar) / sizeof(sc_toolbar[0]))
+#define SC_TB_ALL (sizeof(sc_toolbar_all) / sizeof(sc_toolbar_all[0]))
+
+// The visible subset/order, built from config (all by default).
+static struct sc_tb_button sc_toolbar[SC_TB_ALL];
+static unsigned sc_tb_count;
+#define SC_TB_COUNT sc_tb_count
+
+// Build the visible button list from sc_conf.buttons ("none" = empty, absent =
+// all in default order, otherwise the named buttons in the given order).
+static void
+sc_toolbar_build(void) {
+    if (!sc_conf.has_buttons) {
+        for (unsigned i = 0; i < SC_TB_ALL; ++i) {
+            sc_toolbar[i] = sc_toolbar_all[i];
+        }
+        sc_tb_count = SC_TB_ALL;
+        return;
+    }
+    sc_tb_count = 0;
+    char list[512];
+    snprintf(list, sizeof(list), "%s", sc_conf.buttons);
+    if (!strcmp(list, "none")) {
+        return;
+    }
+    for (char *tok = strtok(list, ","); tok; tok = strtok(NULL, ",")) {
+        while (*tok == ' ') {
+            ++tok;
+        }
+        char *end = tok + strlen(tok);
+        while (end > tok && (end[-1] == ' ' || end[-1] == '\t')) {
+            *--end = '\0';
+        }
+        for (unsigned i = 0; i < SC_TB_ALL; ++i) {
+            if (!strcmp(tok, sc_toolbar_all[i].name)) {
+                sc_toolbar[sc_tb_count++] = sc_toolbar_all[i];
+                break;
+            }
+        }
+    }
+}
 
 // Notification button cycle state: 0 collapsed, 1 notifications, 2 settings.
 static int sc_tb_notif_state = 0;
 
+static bool sc_tb_built = false;
+
+static void
+ensure_built(void) {
+    if (!sc_tb_built) {
+        sc_toolbar_build();
+        sc_tb_built = true;
+    }
+}
+
+void
+sc_toolbar_init(struct sc_screen *screen) {
+    ensure_built();
+    if (sc_conf.pin_on_top) {
+        sc_tb_pinned = true;
+        SDL_SetWindowAlwaysOnTop(screen->window, true);
+    }
+}
+
 int
 sc_toolbar_width(void) {
+    ensure_built();
+    if (sc_tb_count == 0) {
+        return 0; // no buttons configured: no gutter
+    }
     return SC_TB_BTN + 2 * SC_TB_PAD;
 }
 
@@ -82,6 +148,9 @@ sc_tb_btn_size(struct sc_screen *screen) {
     int w, h;
     SDL_GetWindowSize(screen->window, &w, &h);
     (void) w;
+    if (SC_TB_COUNT == 0) {
+        return SC_TB_BTN;
+    }
     float avail = (float) h - 2 * SC_TB_PAD - (SC_TB_COUNT - 1) * SC_TB_GAP;
     float s = avail / SC_TB_COUNT;
     if (s > SC_TB_BTN) {
@@ -273,6 +342,19 @@ draw_icon(SDL_Renderer *rr, enum sc_tb_icon ic, float bx, float by, float sz,
             RECT(0.28f, 0.54f, 0.46f, 0.72f);
             RECT(0.54f, 0.54f, 0.72f, 0.72f);
             break;
+        case IC_AWAKE:
+            // Sun: filled centre + cardinal + diagonal rays.
+            fill_fan(rr, c, (float[]){
+                X(0.5f), Y(0.5f),
+                X(0.36f), Y(0.5f), X(0.4f), Y(0.4f), X(0.5f), Y(0.36f),
+                X(0.6f), Y(0.4f), X(0.64f), Y(0.5f), X(0.6f), Y(0.6f),
+                X(0.5f), Y(0.64f), X(0.4f), Y(0.6f), X(0.36f), Y(0.5f),
+            }, 10);
+            RECT(0.47f, 0.16f, 0.53f, 0.26f); // top ray
+            RECT(0.47f, 0.74f, 0.53f, 0.84f); // bottom ray
+            RECT(0.16f, 0.47f, 0.26f, 0.53f); // left ray
+            RECT(0.74f, 0.47f, 0.84f, 0.53f); // right ray
+            break;
     }
 #undef X
 #undef Y
@@ -342,6 +424,8 @@ sc_toolbar_render(struct sc_screen *screen) {
         bool active = (sc_toolbar[i].action == SC_TB_PIN && sc_tb_pinned)
                    || (sc_toolbar[i].action == SC_TB_SHELL && sc_shell_is_open())
                    || (sc_toolbar[i].action == SC_TB_APPS && sc_apps_is_open())
+                   || (sc_toolbar[i].action == SC_TB_AWAKE
+                       && sc_capture_awake_is_on())
                    || recording;
         if (active) {
             SDL_SetRenderDrawColor(renderer, 40, 100, 176, 255);
@@ -366,10 +450,15 @@ sc_toolbar_render(struct sc_screen *screen) {
     }
 
     // Tooltip for the hovered button, to the right of the toolbar.
-    if (hovered >= 0) {
+    // SCRCPY_LABELS=1 shows every label at once (for a labelled screenshot).
+    bool all_labels = getenv("SCRCPY_LABELS") != NULL;
+    for (unsigned ti = 0; ti < SC_TB_COUNT; ++ti) {
+        if (!all_labels && (int) ti != hovered) {
+            continue;
+        }
         float bx, by, bs;
-        sc_toolbar_button_rect(screen, (unsigned) hovered, &bx, &by, &bs);
-        const char *label = sc_toolbar[hovered].label;
+        sc_toolbar_button_rect(screen, ti, &bx, &by, &bs);
+        const char *label = sc_toolbar[ti].label;
         float px = SDL_max(2.f, roundf(1.5f * scale));
         float tw = strlen(label) * 8 * px;
         float th = 8 * px;
@@ -489,6 +578,9 @@ sc_toolbar_do(struct sc_screen *screen, const struct sc_tb_button *btn) {
             break;
         case SC_TB_APPS:
             sc_apps_toggle(screen);
+            break;
+        case SC_TB_AWAKE:
+            sc_capture_stay_awake(!sc_capture_awake_is_on());
             break;
     }
 }

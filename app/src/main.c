@@ -8,6 +8,7 @@
 #include <SDL3/SDL.h>
 
 #include "cli.h"
+#include "userconf.h"
 #include "events.h"
 #include "options.h"
 #include "picker.h"
@@ -90,6 +91,9 @@ main_scrcpy(int argc, char *argv[]) {
         goto net_cleanup;
     }
 
+    // Load user configuration (toolbar buttons, drawer widths, capture dir, ...)
+    sc_config_load();
+
     // Picker mode: when no device was requested on the command line, show a
     // startup picker (opens a window immediately, waits when nothing is
     // connected, auto-connects a lone device, lets the user choose when several
@@ -97,6 +101,7 @@ main_scrcpy(int argc, char *argv[]) {
     // picker so the app stays open and reconnects automatically. Closing either
     // window quits.
     bool picker_mode = !args.opts.serial;
+    int quick_fail_streak = 0;
     for (;;) {
         if (picker_mode) {
             char *picked = NULL;
@@ -110,22 +115,34 @@ main_scrcpy(int argc, char *argv[]) {
             }
         }
 
+        Uint64 session_start = SDL_GetTicks();
 #ifdef HAVE_USB
         ret = args.opts.otg ? scrcpy_otg(&args.opts) : scrcpy(&args.opts);
 #else
         ret = scrcpy(&args.opts);
 #endif
+        bool quick = SDL_GetTicks() - session_start < 3000;
 
-        if (picker_mode && ret == SCRCPY_EXIT_DISCONNECTED) {
-            // Device unplugged: forget it and return to the picker, which waits
-            // for a device to come back and reconnects.
+        // Any non-SUCCESS exit in picker mode means the device is gone: a clean
+        // unplug returns DISCONNECTED, but an abrupt one races into a demuxer/
+        // controller error (FAILURE). Both should return to the picker so the
+        // app keeps running across reconnects. Only give up if connections keep
+        // failing immediately (a broken setup) — otherwise we'd loop invisibly.
+        if (picker_mode && ret != SCRCPY_EXIT_SUCCESS) {
             free((void *) args.opts.serial);
             args.opts.serial = NULL;
-            // Drop any stale queued events from the finished session.
-            SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
+            SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST); // drop stale events
+            if (ret == SCRCPY_EXIT_FAILURE && quick) {
+                if (++quick_fail_streak >= 3) {
+                    break; // repeated immediate failures: stop retrying
+                }
+                SDL_Delay(700); // back off before retrying
+            } else {
+                quick_fail_streak = 0; // a real session ran; keep reconnecting
+            }
             continue;
         }
-        break; // user quit, an error, or a fixed -s device: done
+        break; // user quit, or a fixed -s device: done
     }
 
     sc_main_thread_destroy();

@@ -27,6 +27,14 @@ sc_capture_record_toggle(void);
 bool
 sc_capture_recording(void);
 
+// Keep the device screen on while plugged in (svc power stayon).
+void
+sc_capture_stay_awake(bool on);
+
+// Current keep-awake state (read from the device on connect, updated on toggle).
+bool
+sc_capture_awake_is_on(void);
+
 // If a status toast is currently active, copy it into `out` and return true.
 bool
 sc_capture_toast(char *out, size_t out_size);
