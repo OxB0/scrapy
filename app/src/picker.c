@@ -46,6 +46,24 @@ pk_reconnect(void) {
     }
 }
 
+// Ensure the adb daemon is running WITHOUT reading a pipe. This is essential:
+// if `adb devices` (which we read via a pipe) is the call that starts the
+// daemon, on Windows the daemon inherits the pipe's write end and our read
+// never sees EOF, hanging the poll thread so the device is never detected.
+static void
+pk_start_server(void) {
+    const char *adb = pk_adb();
+    if (!adb) {
+        return;
+    }
+    const char *argv[] = {adb, "start-server", NULL};
+    sc_pid pid;
+    if (sc_process_execute_p(argv, &pid, 0, NULL, NULL, NULL)
+            == SC_PROCESS_SUCCESS) {
+        sc_process_wait(pid, true);
+    }
+}
+
 // Run `adb devices -l`, filling `out` with connectable ("device" state) devices
 // and setting `*pending` to the count of not-yet-ready ("offline"/
 // "unauthorized") devices. Returns the number of connectable devices.
@@ -56,6 +74,7 @@ pk_list(struct pk_dev *out, int max, int *pending) {
     if (!adb) {
         return 0;
     }
+    pk_start_server(); // never let `adb devices` be the one to fork the daemon
     const char *argv[] = {adb, "devices", "-l", NULL};
     sc_pid pid;
     sc_pipe pout;
