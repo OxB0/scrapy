@@ -6,6 +6,7 @@
 
 #include "android/input.h"
 #include "android/keycodes.h"
+#include "capture.h"
 #include "control_msg.h"
 #include "controller.h"
 #include "font8x8_basic.h"
@@ -21,6 +22,7 @@
 enum sc_tb_icon {
     IC_BACK, IC_HOME, IC_RECENTS, IC_MENU, IC_NOTIF,
     IC_VOLUP, IC_VOLDN, IC_ROTATE, IC_POWER, IC_PIN, IC_SHELL,
+    IC_SHOT, IC_REC,
 };
 
 enum sc_tb_action {
@@ -30,6 +32,8 @@ enum sc_tb_action {
     SC_TB_ROTATE,       // rotate device
     SC_TB_PIN,          // toggle always-on-top (client-side)
     SC_TB_SHELL,        // toggle the terminal drawer
+    SC_TB_SHOT,         // save a screenshot to the PC
+    SC_TB_REC,          // toggle screen recording
 };
 
 struct sc_tb_button {
@@ -45,6 +49,8 @@ static bool sc_tb_pinned = false;
 static const struct sc_tb_button sc_toolbar[] = {
     {IC_PIN,     SC_TB_PIN,         0,                    "Pin on top"},
     {IC_SHELL,   SC_TB_SHELL,       0,                    "Shell"},
+    {IC_SHOT,    SC_TB_SHOT,        0,                    "Screenshot"},
+    {IC_REC,     SC_TB_REC,         0,                    "Record"},
     {IC_BACK,    SC_TB_BACK_SCREEN, 0,                    "Back"},
     {IC_HOME,    SC_TB_KEY,         AKEYCODE_HOME,        "Home"},
     {IC_RECENTS, SC_TB_KEY,         AKEYCODE_APP_SWITCH,  "Recents"},
@@ -66,19 +72,39 @@ sc_toolbar_width(void) {
     return SC_TB_BTN + 2 * SC_TB_PAD;
 }
 
-static void
-sc_toolbar_button_rect(struct sc_screen *screen, unsigned i,
-                       float *x, float *y) {
+// Button size shrinks from SC_TB_BTN so all buttons fit the window height (the
+// gutter width stays fixed; buttons are centered in it horizontally).
+static float
+sc_tb_btn_size(struct sc_screen *screen) {
     int w, h;
     SDL_GetWindowSize(screen->window, &w, &h);
     (void) w;
-    float total = SC_TB_COUNT * SC_TB_BTN + (SC_TB_COUNT - 1) * SC_TB_GAP;
-    *x = SC_TB_PAD; // toolbar on the left edge
+    float avail = (float) h - 2 * SC_TB_PAD - (SC_TB_COUNT - 1) * SC_TB_GAP;
+    float s = avail / SC_TB_COUNT;
+    if (s > SC_TB_BTN) {
+        s = SC_TB_BTN;
+    }
+    if (s < 20) {
+        s = 20;
+    }
+    return s;
+}
+
+static void
+sc_toolbar_button_rect(struct sc_screen *screen, unsigned i,
+                       float *x, float *y, float *size) {
+    int w, h;
+    SDL_GetWindowSize(screen->window, &w, &h);
+    (void) w;
+    float s = sc_tb_btn_size(screen);
+    float total = SC_TB_COUNT * s + (SC_TB_COUNT - 1) * SC_TB_GAP;
+    *x = SC_TB_PAD + (SC_TB_BTN - s) / 2.0f; // centered in the fixed gutter
     float top = (h - total) / 2.0f;
     if (top < SC_TB_PAD) {
         top = SC_TB_PAD;
     }
-    *y = top + i * (SC_TB_BTN + SC_TB_GAP);
+    *y = top + i * (s + SC_TB_GAP);
+    *size = s;
 }
 
 // --- drawing helpers (physical pixel coordinates) ---
@@ -219,6 +245,24 @@ draw_icon(SDL_Renderer *rr, enum sc_tb_icon ic, float bx, float by, float sz,
             thick_line(rr, X(0.44f), Y(0.5f), X(0.3f), Y(0.64f), t);
             RECT(0.5f, 0.6f, 0.72f, 0.66f);
             break;
+        case IC_SHOT:
+            // Camera: body + lens + shutter button.
+            RECT(0.24f, 0.36f, 0.76f, 0.72f);
+            RECT(0.4f, 0.30f, 0.6f, 0.38f); // viewfinder hump
+            SDL_SetRenderDrawColor(rr, 44, 45, 51, 255); // lens cutout
+            RECT(0.42f, 0.46f, 0.58f, 0.64f);
+            SDL_SetRenderDrawColor(rr, r, g, b, 255);
+            RECT(0.64f, 0.40f, 0.71f, 0.45f); // flash
+            break;
+        case IC_REC:
+            // Filled record dot (turns red while recording via the color arg).
+            fill_fan(rr, c, (float[]){
+                X(0.5f), Y(0.5f),
+                X(0.32f), Y(0.5f), X(0.37f), Y(0.35f), X(0.5f), Y(0.3f),
+                X(0.63f), Y(0.35f), X(0.68f), Y(0.5f), X(0.63f), Y(0.65f),
+                X(0.5f), Y(0.7f), X(0.37f), Y(0.65f), X(0.32f), Y(0.5f),
+            }, 10);
+            break;
     }
 #undef X
 #undef Y
@@ -275,18 +319,19 @@ sc_toolbar_render(struct sc_screen *screen) {
 
     int hovered = -1;
     for (unsigned i = 0; i < SC_TB_COUNT; ++i) {
-        float bx, by;
-        sc_toolbar_button_rect(screen, i, &bx, &by);
-        bool hover = mx >= bx && mx < bx + SC_TB_BTN
-                  && my >= by && my < by + SC_TB_BTN;
+        float bx, by, bs;
+        sc_toolbar_button_rect(screen, i, &bx, &by, &bs);
+        bool hover = mx >= bx && mx < bx + bs && my >= by && my < by + bs;
         if (hover) {
             hovered = i;
         }
 
-        SDL_FRect bg = {bx * scale, by * scale, SC_TB_BTN * scale,
-                        SC_TB_BTN * scale};
+        bool recording = sc_toolbar[i].action == SC_TB_REC
+                      && sc_capture_recording();
+        SDL_FRect bg = {bx * scale, by * scale, bs * scale, bs * scale};
         bool active = (sc_toolbar[i].action == SC_TB_PIN && sc_tb_pinned)
-                   || (sc_toolbar[i].action == SC_TB_SHELL && sc_shell_is_open());
+                   || (sc_toolbar[i].action == SC_TB_SHELL && sc_shell_is_open())
+                   || recording;
         if (active) {
             SDL_SetRenderDrawColor(renderer, 40, 100, 176, 255);
         } else if (hover) {
@@ -299,14 +344,20 @@ sc_toolbar_render(struct sc_screen *screen) {
         SDL_RenderRect(renderer, &bg);
 
         Uint8 lum = hover ? 255 : 220;
-        draw_icon(renderer, sc_toolbar[i].icon, bx, by, SC_TB_BTN, scale,
-                  lum, lum, hover ? 255 : 228);
+        // The record dot glows red while recording.
+        if (recording) {
+            draw_icon(renderer, sc_toolbar[i].icon, bx, by, bs, scale,
+                      240, 70, 70);
+        } else {
+            draw_icon(renderer, sc_toolbar[i].icon, bx, by, bs, scale,
+                      lum, lum, hover ? 255 : 228);
+        }
     }
 
     // Tooltip for the hovered button, to the right of the toolbar.
     if (hovered >= 0) {
-        float bx, by;
-        sc_toolbar_button_rect(screen, (unsigned) hovered, &bx, &by);
+        float bx, by, bs;
+        sc_toolbar_button_rect(screen, (unsigned) hovered, &bx, &by, &bs);
         const char *label = sc_toolbar[hovered].label;
         float px = SDL_max(2.f, roundf(1.5f * scale));
         float tw = strlen(label) * 8 * px;
@@ -314,8 +365,8 @@ sc_toolbar_render(struct sc_screen *screen) {
         float padx = 8 * scale, pady = 5 * scale;
         float boxw = tw + 2 * padx;
         float boxh = th + 2 * pady;
-        float boxx = (bx + SC_TB_BTN) * scale + 8 * scale;
-        float boxy = (by + SC_TB_BTN / 2.f) * scale - boxh / 2.f;
+        float boxx = (bx + bs) * scale + 8 * scale;
+        float boxy = (by + bs / 2.f) * scale - boxh / 2.f;
         SDL_FRect tip = {boxx, boxy, boxw, boxh};
         SDL_SetRenderDrawColor(renderer, 18, 18, 22, 235);
         SDL_RenderFillRect(renderer, &tip);
@@ -323,6 +374,26 @@ sc_toolbar_render(struct sc_screen *screen) {
         SDL_RenderRect(renderer, &tip);
         draw_text(renderer, boxx + padx, boxy + pady, px, label,
                   235, 236, 240);
+    }
+
+    // Transient status toast (screenshot/record feedback), centered near the
+    // bottom of the video area.
+    char toast[128];
+    if (sc_capture_toast(toast, sizeof(toast))) {
+        float px = SDL_max(2.f, roundf(1.5f * scale));
+        float tw = strlen(toast) * 8 * px;
+        float padx = 12 * scale, pady = 7 * scale;
+        float boxw = tw + 2 * padx;
+        float boxh = 8 * px + 2 * pady;
+        float boxx = (gutter * scale) + ((float) w * scale - gutter * scale
+                                         - boxw) / 2.f;
+        float boxy = (float) h * scale - boxh - 24 * scale;
+        SDL_FRect box = {boxx, boxy, boxw, boxh};
+        SDL_SetRenderDrawColor(renderer, 20, 20, 24, 235);
+        SDL_RenderFillRect(renderer, &box);
+        SDL_SetRenderDrawColor(renderer, 90, 92, 100, 255);
+        SDL_RenderRect(renderer, &box);
+        draw_text(renderer, boxx + padx, boxy + pady, px, toast, 235, 236, 240);
     }
 }
 
@@ -399,6 +470,12 @@ sc_toolbar_do(struct sc_screen *screen, const struct sc_tb_button *btn) {
         case SC_TB_SHELL:
             sc_shell_toggle(screen);
             break;
+        case SC_TB_SHOT:
+            sc_capture_screenshot();
+            break;
+        case SC_TB_REC:
+            sc_capture_record_toggle();
+            break;
     }
 }
 
@@ -412,9 +489,9 @@ sc_toolbar_click(struct sc_screen *screen, float x, float y) {
         return false; // not in the left gutter
     }
     for (unsigned i = 0; i < SC_TB_COUNT; ++i) {
-        float bx, by;
-        sc_toolbar_button_rect(screen, i, &bx, &by);
-        if (x >= bx && x < bx + SC_TB_BTN && y >= by && y < by + SC_TB_BTN) {
+        float bx, by, bs;
+        sc_toolbar_button_rect(screen, i, &bx, &by, &bs);
+        if (x >= bx && x < bx + bs && y >= by && y < by + bs) {
             sc_toolbar_do(screen, &sc_toolbar[i]);
             break;
         }

@@ -15,6 +15,7 @@
 #endif
 
 #include "audio_player.h"
+#include "capture.h"
 #include "controller.h"
 #include "decoder.h"
 #include "delay_buffer.h"
@@ -770,6 +771,8 @@ aoa_complete:
 
         // On-screen terminal drawer targets this device.
         sc_shell_init(serial);
+        // Screenshot / screen-record buttons target this device.
+        sc_capture_init(serial);
 
         if (options->video_playback) {
             struct sc_frame_source *src = &s->video_decoder.frame_source;
@@ -989,6 +992,7 @@ end:
     }
 
     sc_shell_destroy();
+    sc_capture_destroy();
 
     if (controller_started) {
         sc_controller_join(&s->controller);

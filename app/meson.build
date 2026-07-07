@@ -33,6 +33,7 @@ src = [
     'src/scrcpy.c',
     'src/screen.c',
     'src/sdl_hints.c',
+    'src/capture.c',
     'src/picker.c',
     'src/server.c',
     'src/shell.c',
