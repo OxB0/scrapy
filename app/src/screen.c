@@ -8,7 +8,9 @@
 #include "icon.h"
 #include "options.h"
 #include "apps.h"
+#include "capture.h"
 #include "shell.h"
+#include "userconf.h"
 #include "toolbar.h"
 #include "util/log.h"
 #include "util/sdl.h"
@@ -1159,6 +1161,25 @@ sc_disconnect_on_timeout(struct sc_disconnect *d, void *userdata) {
 
 void
 sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
+    // Config-driven shortcuts for the custom actions (checked first so they work
+    // even while a drawer is open).
+    if (event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat) {
+        unsigned em = 0;
+        if (event->key.mod & SDL_KMOD_ALT) em |= SDL_KMOD_ALT;
+        if (event->key.mod & SDL_KMOD_CTRL) em |= SDL_KMOD_CTRL;
+        if (event->key.mod & SDL_KMOD_SHIFT) em |= SDL_KMOD_SHIFT;
+        if (event->key.mod & SDL_KMOD_GUI) em |= SDL_KMOD_GUI;
+        for (int i = 0; i < SC_SHORTCUT_COUNT; ++i) {
+            if (sc_conf.shortcuts[i].key == 0
+                    || (int) event->key.key != sc_conf.shortcuts[i].key
+                    || em != sc_conf.shortcuts[i].mod) {
+                continue;
+            }
+            sc_toolbar_trigger(screen, i);
+            return;
+        }
+    }
+
     // The terminal drawer captures keyboard/text input while open.
     if (sc_shell_handle_event(screen, event)) {
         return;

@@ -11,6 +11,14 @@ struct sc_screen;
 void
 sc_toolbar_init(struct sc_screen *screen);
 
+// Toggle the always-on-top ("pin") state.
+void
+sc_toolbar_toggle_pin(struct sc_screen *screen);
+
+// Perform the toolbar action bound to the given sc_shortcut value.
+void
+sc_toolbar_trigger(struct sc_screen *screen, int shortcut);
+
 // Width (logical px) of the toolbar gutter reserved on the right of the window.
 int
 sc_toolbar_width(void);

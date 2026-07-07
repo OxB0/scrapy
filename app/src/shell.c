@@ -474,8 +474,10 @@ sc_shell_render(struct sc_screen *screen) {
     SDL_Rect clip = {(int) (x0 * scale), 0, (int) (pw * scale), (int) (h * scale)};
     SDL_SetRenderClipRect(renderer, &clip);
 
-    // Font size: pixels per source pixel.
-    float px = SDL_max(1.f, scale * SC_SH_FONT_MUL);
+    // Font size: pixels per source pixel (config override, else 1.8).
+    float mul = sc_conf.terminal_text_size > 0 ? sc_conf.terminal_text_size
+                                               : SC_SH_FONT_MUL;
+    float px = SDL_max(1.f, scale * mul);
     float line_h = 16 * px;
     float pad = 8 * scale;
     float left = x0 * scale + pad;

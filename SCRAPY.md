@@ -1,32 +1,35 @@
-scrapy because screen copy is just too long
+scrapy is my personal fix for the things that annoy me about scrcpy, including:
 
-scrapy is supposed to be a fix for me for scrcpy to all the things that annoy me including:
+- Not working when two devices are connected (and having to reopen it on every disconnect)
+- Opening unneeded console windows
+- Needing to open a shell manually
+- Having no easy way to press the home button or view notifications
 
-not working with 2 devices connected \ every disconnect i need to reopen
-opening uneeded consoles
-needing to open a shell
-not being able to easily press home buttons or notifications
+...and a bunch of other features that I think come in handy.
 
-and a bunch of more features that I think can come in handy
+I called it scrapy because imo saying screen copy every time is just too long...
 
-so in nicer terms:
-scrapy is a fork of [scrcpy](https://github.com/Genymobile/scrcpy) that adds an
-on-screen control layer to the mirror window, so you can drive the device
-without memorising keyboard shortcuts. Everything is drawn inside scrcpy's own
-SDL window — there is no separate app and no extra process.
+So, in nicer terms:
 
-and here are some images for the curious
+scrapy is a fork of [scrcpy](https://github.com/Genymobile/scrcpy) that adds an on-screen control layer to the mirror window, so you can drive the device without memorizing keyboard shortcuts, as well as adding some nice features that are very usefull.
+
+And here are some images for the curious:
 
 ![Toolbar with every button labelled](doc/scrapy-toolbar.png)
 
+When more than one device is connected, scrapy lets you pick which one to mirror (and it reconnects automatically instead of quitting when a device is unplugged):
 
-you can also edit the conf file that gets created after the first run to change some of the default settings and looks
+![Choosing between two connected devices](doc/scrapy-picker.png)
+
+You can also edit the config file that gets created after the first run to change some of the default settings and looks:
 
 - `buttons` — which toolbar buttons to show, in order (or `none`)
 - `shell_width`, `apps_width` — drawer widths
+- `terminal_text_size` — terminal font size
 - `capture_dir` — where screenshots and recordings are saved
 - `pin_on_top` — start pinned always-on-top
-- `default_density` — force a dpi on connect
+- `default_density` — force a DPI on connect
+- `key_*` — rebind any button's keyboard shortcut
 
 ## Building
 
@@ -36,5 +39,4 @@ Windows client (cross-compiled from Linux/WSL with mingw-w64):
 ./release/build_windows.sh 64
 ```
 
-Based on the great [scrcpy](https://github.com/Genymobile/scrcpy) by Genymobile,
-licensed under Apache-2.0.
+Based on the great [scrcpy](https://github.com/Genymobile/scrcpy) by Genymobile, licensed under Apache-2.0.

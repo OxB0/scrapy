@@ -45,28 +45,29 @@ struct sc_tb_button {
     enum sc_tb_action action;
     enum android_keycode keycode; // for SC_TB_KEY
     const char *label;
-    const char *name; // config token
+    const char *name;   // config token
+    int shortcut;       // sc_shortcut enum
 };
 
 // Toggle state for the pin (always-on-top) button.
 static bool sc_tb_pinned = false;
 
 static const struct sc_tb_button sc_toolbar_all[] = {
-    {IC_PIN,     SC_TB_PIN,         0,               "Pin on top",   "pin"},
-    {IC_AWAKE,   SC_TB_AWAKE,       0,               "Keep awake",   "awake"},
-    {IC_SHELL,   SC_TB_SHELL,       0,               "Shell",        "shell"},
-    {IC_APPS,    SC_TB_APPS,        0,               "Apps & density", "apps"},
-    {IC_SHOT,    SC_TB_SHOT,        0,               "Screenshot",   "screenshot"},
-    {IC_REC,     SC_TB_REC,         0,               "Record",       "record"},
-    {IC_BACK,    SC_TB_BACK_SCREEN, 0,               "Back",         "back"},
-    {IC_HOME,    SC_TB_KEY,         AKEYCODE_HOME,   "Home",         "home"},
-    {IC_RECENTS, SC_TB_KEY,      AKEYCODE_APP_SWITCH, "Recents",     "recents"},
-    {IC_MENU,    SC_TB_KEY,         AKEYCODE_MENU,   "Menu",         "menu"},
-    {IC_NOTIF,   SC_TB_NOTIF,       0,            "Notifications", "notifications"},
-    {IC_VOLUP,   SC_TB_KEY,      AKEYCODE_VOLUME_UP,  "Volume up",   "volup"},
-    {IC_VOLDN,   SC_TB_KEY,    AKEYCODE_VOLUME_DOWN,  "Volume down", "voldown"},
-    {IC_ROTATE,  SC_TB_ROTATE,      0,               "Rotate",       "rotate"},
-    {IC_POWER,   SC_TB_KEY,         AKEYCODE_POWER,  "Power",        "power"},
+    {IC_PIN,     SC_TB_PIN,         0,          "Pin on top",  "pin",   SC_SHORTCUT_PIN},
+    {IC_AWAKE,   SC_TB_AWAKE,       0,          "Keep awake",  "awake", SC_SHORTCUT_AWAKE},
+    {IC_SHELL,   SC_TB_SHELL,       0,          "Shell",       "shell", SC_SHORTCUT_SHELL},
+    {IC_APPS,    SC_TB_APPS,        0,      "Apps & density",  "apps",  SC_SHORTCUT_APPS},
+    {IC_SHOT,    SC_TB_SHOT,        0,          "Screenshot",  "screenshot", SC_SHORTCUT_SCREENSHOT},
+    {IC_REC,     SC_TB_REC,         0,          "Record",      "record", SC_SHORTCUT_RECORD},
+    {IC_BACK,    SC_TB_BACK_SCREEN, 0,          "Back",        "back",  SC_SHORTCUT_BACK},
+    {IC_HOME,    SC_TB_KEY,   AKEYCODE_HOME,    "Home",        "home",  SC_SHORTCUT_HOME},
+    {IC_RECENTS, SC_TB_KEY, AKEYCODE_APP_SWITCH, "Recents",    "recents", SC_SHORTCUT_RECENTS},
+    {IC_MENU,    SC_TB_KEY,   AKEYCODE_MENU,    "Menu",        "menu",  SC_SHORTCUT_MENU},
+    {IC_NOTIF,   SC_TB_NOTIF,       0,        "Notifications", "notifications", SC_SHORTCUT_NOTIF},
+    {IC_VOLUP,   SC_TB_KEY, AKEYCODE_VOLUME_UP, "Volume up",   "volup", SC_SHORTCUT_VOLUP},
+    {IC_VOLDN,   SC_TB_KEY, AKEYCODE_VOLUME_DOWN, "Volume down", "voldown", SC_SHORTCUT_VOLDOWN},
+    {IC_ROTATE,  SC_TB_ROTATE,      0,          "Rotate",      "rotate", SC_SHORTCUT_ROTATE},
+    {IC_POWER,   SC_TB_KEY,   AKEYCODE_POWER,   "Power",       "power", SC_SHORTCUT_POWER},
 };
 
 #define SC_TB_ALL (sizeof(sc_toolbar_all) / sizeof(sc_toolbar_all[0]))
@@ -130,6 +131,12 @@ sc_toolbar_init(struct sc_screen *screen) {
         sc_tb_pinned = true;
         SDL_SetWindowAlwaysOnTop(screen->window, true);
     }
+}
+
+void
+sc_toolbar_toggle_pin(struct sc_screen *screen) {
+    sc_tb_pinned = !sc_tb_pinned;
+    SDL_SetWindowAlwaysOnTop(screen->window, sc_tb_pinned);
 }
 
 int
@@ -458,7 +465,15 @@ sc_toolbar_render(struct sc_screen *screen) {
         }
         float bx, by, bs;
         sc_toolbar_button_rect(screen, ti, &bx, &by, &bs);
-        const char *label = sc_toolbar[ti].label;
+        // Label plus its keyboard shortcut, e.g. "Shell  (Alt+Shift+T)".
+        char sc[48];
+        sc_shortcut_format(sc_toolbar[ti].shortcut, sc, sizeof(sc));
+        char label[80];
+        if (sc[0]) {
+            snprintf(label, sizeof(label), "%s  (%s)", sc_toolbar[ti].label, sc);
+        } else {
+            snprintf(label, sizeof(label), "%s", sc_toolbar[ti].label);
+        }
         float px = SDL_max(2.f, roundf(1.5f * scale));
         float tw = strlen(label) * 8 * px;
         float th = 8 * px;
@@ -582,6 +597,18 @@ sc_toolbar_do(struct sc_screen *screen, const struct sc_tb_button *btn) {
         case SC_TB_AWAKE:
             sc_capture_stay_awake(!sc_capture_awake_is_on());
             break;
+    }
+}
+
+void
+sc_toolbar_trigger(struct sc_screen *screen, int shortcut) {
+    // Look up the full button table (not just the visible subset) so a shortcut
+    // still works even if its button is hidden via config.
+    for (unsigned i = 0; i < SC_TB_ALL; ++i) {
+        if (sc_toolbar_all[i].shortcut == shortcut) {
+            sc_toolbar_do(screen, &sc_toolbar_all[i]);
+            return;
+        }
     }
 }
 
