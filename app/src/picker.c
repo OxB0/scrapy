@@ -9,6 +9,7 @@
 #include "font8x8_basic.h"
 #include "util/log.h"
 #include "util/process.h"
+#include "util/thread.h"
 
 #define SC_PK_MAX 16
 
@@ -17,18 +18,43 @@ struct pk_dev {
     char model[128];
 };
 
-// Run `adb devices -l` and parse the connected ("device" state) devices.
-static int
-pk_list(struct pk_dev *out, int max) {
+static const char *
+pk_adb(void) {
     const char *adb = sc_adb_get_executable();
     if (!adb) {
         // adb is normally initialized later in the mirror flow; the picker runs
         // first, so make sure the executable path is resolved.
         sc_adb_init();
         adb = sc_adb_get_executable();
-        if (!adb) {
-            return 0;
-        }
+    }
+    return adb;
+}
+
+// Nudge devices that adb is holding in the "offline" state (a common cause of a
+// freshly-plugged or just-disconnected device not being detected).
+static void
+pk_reconnect(void) {
+    const char *adb = pk_adb();
+    if (!adb) {
+        return;
+    }
+    const char *argv[] = {adb, "reconnect", "offline", NULL};
+    sc_pid pid;
+    if (sc_process_execute_p(argv, &pid, 0, NULL, NULL, NULL)
+            == SC_PROCESS_SUCCESS) {
+        sc_process_wait(pid, true);
+    }
+}
+
+// Run `adb devices -l`, filling `out` with connectable ("device" state) devices
+// and setting `*pending` to the count of not-yet-ready ("offline"/
+// "unauthorized") devices. Returns the number of connectable devices.
+static int
+pk_list(struct pk_dev *out, int max, int *pending) {
+    *pending = 0;
+    const char *adb = pk_adb();
+    if (!adb) {
+        return 0;
     }
     const char *argv[] = {adb, "devices", "-l", NULL};
     sc_pid pid;
@@ -58,21 +84,25 @@ pk_list(struct pk_dev *out, int max) {
         if (!strstr(line, "List of devices")) {
             char serial[128] = {0};
             char state[64] = {0};
-            if (sscanf(line, "%127s %63s", serial, state) == 2
-                    && !strcmp(state, "device")) {
-                snprintf(out[count].serial, sizeof(out[count].serial), "%s",
-                         serial);
-                out[count].model[0] = '\0';
-                char *m = strstr(line, "model:");
-                if (m) {
-                    sscanf(m + 6, "%127[^ \t\r]", out[count].model);
-                    for (char *p = out[count].model; *p; ++p) {
-                        if (*p == '_') {
-                            *p = ' ';
+            if (sscanf(line, "%127s %63s", serial, state) == 2) {
+                if (!strcmp(state, "device")) {
+                    snprintf(out[count].serial, sizeof(out[count].serial), "%s",
+                             serial);
+                    out[count].model[0] = '\0';
+                    char *m = strstr(line, "model:");
+                    if (m) {
+                        sscanf(m + 6, "%127[^ \t\r]", out[count].model);
+                        for (char *p = out[count].model; *p; ++p) {
+                            if (*p == '_') {
+                                *p = ' ';
+                            }
                         }
                     }
+                    count++;
+                } else if (!strcmp(state, "offline")
+                        || !strcmp(state, "unauthorized")) {
+                    (*pending)++;
                 }
-                count++;
             }
         }
         line = nl ? nl + 1 : NULL;
@@ -114,10 +144,66 @@ pk_row_rect(int i) {
     return rc;
 }
 
+// Shared state between the render loop and the background poll thread, so the
+// blocking `adb devices` call never stalls rendering (which would make the
+// hover highlight lag).
+struct pk_ctx {
+    sc_mutex mutex;
+    struct pk_dev devs[SC_PK_MAX];
+    int ndev;
+    int pending;
+    bool stop;
+};
+
+static int
+pk_poll_thread(void *userdata) {
+    struct pk_ctx *c = userdata;
+    Uint64 last_nudge = 0;
+    bool first = true;
+    for (;;) {
+        sc_mutex_lock(&c->mutex);
+        bool stop = c->stop;
+        sc_mutex_unlock(&c->mutex);
+        if (stop) {
+            break;
+        }
+
+        struct pk_dev tmp[SC_PK_MAX];
+        int pend = 0;
+        int n = pk_list(tmp, SC_PK_MAX, &pend);
+
+        sc_mutex_lock(&c->mutex);
+        memcpy(c->devs, tmp, sizeof(tmp));
+        c->ndev = n;
+        c->pending = pend;
+        sc_mutex_unlock(&c->mutex);
+
+        Uint64 now = SDL_GetTicks();
+        if (pend > 0 && (first || now - last_nudge > 3000)) {
+            pk_reconnect();
+            last_nudge = now;
+        }
+        first = false;
+
+        // Sleep ~500ms, but wake promptly when asked to stop.
+        for (int i = 0; i < 10; ++i) {
+            sc_mutex_lock(&c->mutex);
+            bool s = c->stop;
+            sc_mutex_unlock(&c->mutex);
+            if (s) {
+                break;
+            }
+            SDL_Delay(50);
+        }
+    }
+    return 0;
+}
+
 bool
 sc_picker_run(char **out_serial) {
     struct pk_dev devs[SC_PK_MAX];
-    int ndev = pk_list(devs, SC_PK_MAX);
+    int pending = 0;
+    int ndev = pk_list(devs, SC_PK_MAX, &pending);
 
     // Exactly one device: connect immediately, no window.
     if (ndev == 1) {
@@ -149,19 +235,29 @@ sc_picker_run(char **out_serial) {
     bool selected = false;
     char *result = NULL;
     bool running = true;
-    Uint64 last_poll = SDL_GetTicks();
+
+    // Poll adb on a background thread so the render loop stays responsive.
+    struct pk_ctx ctx;
+    sc_mutex_init(&ctx.mutex);
+    memcpy(ctx.devs, devs, sizeof(devs));
+    ctx.ndev = ndev;
+    ctx.pending = pending;
+    ctx.stop = false;
+    sc_thread poll_thread;
+    bool poll_started = sc_thread_create(&poll_thread, pk_poll_thread,
+                                         "sc-picker-poll", &ctx);
 
     while (running) {
-        // Re-scan for devices about once a second.
-        Uint64 now = SDL_GetTicks();
-        if (now - last_poll > 900) {
-            ndev = pk_list(devs, SC_PK_MAX);
-            last_poll = now;
-            if (ndev == 1) {
-                result = strdup(devs[0].serial);
-                selected = true;
-                break;
-            }
+        // Read the latest scan (cheap; never blocks on adb).
+        sc_mutex_lock(&ctx.mutex);
+        memcpy(devs, ctx.devs, sizeof(devs));
+        ndev = ctx.ndev;
+        pending = ctx.pending;
+        sc_mutex_unlock(&ctx.mutex);
+        if (ndev == 1) {
+            result = strdup(devs[0].serial);
+            selected = true;
+            break;
         }
 
         SDL_Event e;
@@ -193,10 +289,18 @@ sc_picker_run(char **out_serial) {
         SDL_RenderClear(ren);
 
         if (ndev == 0) {
-            pk_text(ren, 20, 24, 2.f, "Waiting for a device...", 220, 222, 228);
-            pk_text(ren, 20, 60, 1.5f,
-                    "Connect a device over USB (with USB debugging on).",
-                    150, 152, 160);
+            if (pending > 0) {
+                pk_text(ren, 20, 24, 2.f, "Device connecting...", 220, 222, 228);
+                pk_text(ren, 20, 60, 1.5f,
+                        "If prompted, allow USB debugging on the phone.",
+                        150, 152, 160);
+            } else {
+                pk_text(ren, 20, 24, 2.f, "Waiting for a device...",
+                        220, 222, 228);
+                pk_text(ren, 20, 60, 1.5f,
+                        "Connect a device over USB (with USB debugging on).",
+                        150, 152, 160);
+            }
         } else {
             pk_text(ren, 20, 22, 2.f, "Select a device", 235, 236, 240);
             for (int i = 0; i < ndev; ++i) {
@@ -218,6 +322,15 @@ sc_picker_run(char **out_serial) {
         SDL_RenderPresent(ren);
         SDL_Delay(16);
     }
+
+    // Stop the poll thread.
+    sc_mutex_lock(&ctx.mutex);
+    ctx.stop = true;
+    sc_mutex_unlock(&ctx.mutex);
+    if (poll_started) {
+        sc_thread_join(&poll_thread, NULL);
+    }
+    sc_mutex_destroy(&ctx.mutex);
 
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);

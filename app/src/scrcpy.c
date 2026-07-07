@@ -14,6 +14,7 @@
 # include <windows.h>
 #endif
 
+#include "apps.h"
 #include "audio_player.h"
 #include "capture.h"
 #include "controller.h"
@@ -773,6 +774,8 @@ aoa_complete:
         sc_shell_init(serial);
         // Screenshot / screen-record buttons target this device.
         sc_capture_init(serial);
+        // Apps + density drawer targets this device.
+        sc_apps_init(serial);
 
         if (options->video_playback) {
             struct sc_frame_source *src = &s->video_decoder.frame_source;
@@ -993,6 +996,7 @@ end:
 
     sc_shell_destroy();
     sc_capture_destroy();
+    sc_apps_destroy();
 
     if (controller_started) {
         sc_controller_join(&s->controller);

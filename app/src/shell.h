@@ -16,6 +16,10 @@ sc_shell_init(const char *serial);
 void
 sc_shell_toggle(struct sc_screen *screen);
 
+// Close the drawer if it is open (no-op otherwise).
+void
+sc_shell_close(struct sc_screen *screen);
+
 bool
 sc_shell_is_open(void);
 

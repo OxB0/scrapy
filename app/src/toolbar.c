@@ -6,6 +6,7 @@
 
 #include "android/input.h"
 #include "android/keycodes.h"
+#include "apps.h"
 #include "capture.h"
 #include "control_msg.h"
 #include "controller.h"
@@ -22,7 +23,7 @@
 enum sc_tb_icon {
     IC_BACK, IC_HOME, IC_RECENTS, IC_MENU, IC_NOTIF,
     IC_VOLUP, IC_VOLDN, IC_ROTATE, IC_POWER, IC_PIN, IC_SHELL,
-    IC_SHOT, IC_REC,
+    IC_SHOT, IC_REC, IC_APPS,
 };
 
 enum sc_tb_action {
@@ -34,6 +35,7 @@ enum sc_tb_action {
     SC_TB_SHELL,        // toggle the terminal drawer
     SC_TB_SHOT,         // save a screenshot to the PC
     SC_TB_REC,          // toggle screen recording
+    SC_TB_APPS,         // toggle the apps/density drawer
 };
 
 struct sc_tb_button {
@@ -49,6 +51,7 @@ static bool sc_tb_pinned = false;
 static const struct sc_tb_button sc_toolbar[] = {
     {IC_PIN,     SC_TB_PIN,         0,                    "Pin on top"},
     {IC_SHELL,   SC_TB_SHELL,       0,                    "Shell"},
+    {IC_APPS,    SC_TB_APPS,        0,                    "Apps & density"},
     {IC_SHOT,    SC_TB_SHOT,        0,                    "Screenshot"},
     {IC_REC,     SC_TB_REC,         0,                    "Record"},
     {IC_BACK,    SC_TB_BACK_SCREEN, 0,                    "Back"},
@@ -263,6 +266,13 @@ draw_icon(SDL_Renderer *rr, enum sc_tb_icon ic, float bx, float by, float sz,
                 X(0.5f), Y(0.7f), X(0.37f), Y(0.65f), X(0.32f), Y(0.5f),
             }, 10);
             break;
+        case IC_APPS:
+            // 2x2 grid of app tiles.
+            RECT(0.28f, 0.28f, 0.46f, 0.46f);
+            RECT(0.54f, 0.28f, 0.72f, 0.46f);
+            RECT(0.28f, 0.54f, 0.46f, 0.72f);
+            RECT(0.54f, 0.54f, 0.72f, 0.72f);
+            break;
     }
 #undef X
 #undef Y
@@ -331,6 +341,7 @@ sc_toolbar_render(struct sc_screen *screen) {
         SDL_FRect bg = {bx * scale, by * scale, bs * scale, bs * scale};
         bool active = (sc_toolbar[i].action == SC_TB_PIN && sc_tb_pinned)
                    || (sc_toolbar[i].action == SC_TB_SHELL && sc_shell_is_open())
+                   || (sc_toolbar[i].action == SC_TB_APPS && sc_apps_is_open())
                    || recording;
         if (active) {
             SDL_SetRenderDrawColor(renderer, 40, 100, 176, 255);
@@ -475,6 +486,9 @@ sc_toolbar_do(struct sc_screen *screen, const struct sc_tb_button *btn) {
             break;
         case SC_TB_REC:
             sc_capture_record_toggle();
+            break;
+        case SC_TB_APPS:
+            sc_apps_toggle(screen);
             break;
     }
 }

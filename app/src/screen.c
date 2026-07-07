@@ -7,6 +7,7 @@
 #include "events.h"
 #include "icon.h"
 #include "options.h"
+#include "apps.h"
 #include "shell.h"
 #include "toolbar.h"
 #include "util/log.h"
@@ -242,14 +243,21 @@ sc_screen_update_content_rect(struct sc_screen *screen) {
     // fit beside it rather than underneath it.
     // Reserve the toolbar gutter and (when open) the terminal panel on the
     // right, so the video is fit to their left.
-    unsigned reserve = sc_toolbar_width() + sc_shell_reserved_width(screen);
+    unsigned reserve = sc_toolbar_width() + sc_shell_reserved_width(screen)
+                     + sc_apps_reserved_width(screen);
     if (window_size.width > reserve) {
         window_size.width -= reserve;
     }
     compute_content_rect(window_size, screen->content_size, is_icon,
                          screen->render_fit, &screen->rect);
-    // The toolbar sits in a left gutter; shift the video past it.
-    screen->rect.x += sc_toolbar_width();
+    if (sc_shell_is_open() || sc_apps_is_open()) {
+        // A drawer is open: pin the video to the toolbar so the drawer can fill
+        // all the remaining width to its right (it grows when the window does).
+        screen->rect.x = sc_toolbar_width();
+    } else {
+        // The toolbar sits in a left gutter; shift the video past it.
+        screen->rect.x += sc_toolbar_width();
+    }
 }
 
 // render the texture to the renderer
@@ -334,6 +342,7 @@ sc_screen_render(struct sc_screen *screen, bool update_content_rect) {
 end:
     sc_toolbar_render(screen);
     sc_shell_render(screen);
+    sc_apps_render(screen);
     sc_sdl_render_present(renderer);
 }
 
@@ -1154,6 +1163,10 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
     if (sc_shell_handle_event(screen, event)) {
         return;
     }
+    // The apps/density drawer captures clicks/scroll within it while open.
+    if (sc_apps_handle_event(screen, event)) {
+        return;
+    }
 
     switch (event->type) {
         case SC_EVENT_OPEN_WINDOW:
@@ -1231,6 +1244,18 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
             }
 
             return;
+    }
+
+    // Repaint on hover over the toolbar or an open drawer so highlights track
+    // the mouse even when the mirror is static (the loop is event-driven and
+    // would otherwise only repaint on the next video frame).
+    if (event->type == SDL_EVENT_MOUSE_MOTION) {
+        bool over_toolbar = event->motion.x < sc_toolbar_width();
+        bool over_drawer = (sc_shell_is_open() || sc_apps_is_open())
+                        && event->motion.x >= screen->rect.x + screen->rect.w;
+        if (over_toolbar || over_drawer) {
+            sc_screen_render(screen, false);
+        }
     }
 
     // On-screen toolbar: a left click on a button performs its action and is

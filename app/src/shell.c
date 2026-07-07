@@ -12,6 +12,7 @@
 #endif
 
 #include "adb/adb.h"
+#include "apps.h"
 #include "events.h"
 #include "font8x16_basic.h"
 #include "screen.h"
@@ -23,7 +24,8 @@
 #define SC_SH_LINES 600     // scrollback ring size
 #define SC_SH_COLS  512     // max stored chars per line
 #define SC_SH_INPUT 1024
-#define SC_SH_TARGET 600    // open panel width (logical px)
+#define SC_SH_TARGET 600    // width the window grows by when the drawer opens
+#define SC_SH_MIN    300    // minimum drawer width (video-fit reservation)
 #define SC_SH_MAXDR  400    // max wrapped display rows built per frame
 #define SC_SH_FONT_MUL 1.8f // font size: pixels per source pixel (at scale 1)
 
@@ -321,6 +323,9 @@ sc_shell_toggle(struct sc_screen *screen) {
     if (!g.ready) {
         return;
     }
+    if (!g.open && sc_apps_is_open()) {
+        sc_apps_close(screen); // share the right-side region
+    }
     g.open = !g.open;
     int w, h;
     SDL_GetWindowSize(screen->window, &w, &h);
@@ -343,6 +348,13 @@ sc_shell_toggle(struct sc_screen *screen) {
     }
 }
 
+void
+sc_shell_close(struct sc_screen *screen) {
+    if (g.open) {
+        sc_shell_toggle(screen);
+    }
+}
+
 bool
 sc_shell_is_open(void) {
     return g.open;
@@ -358,7 +370,9 @@ sc_shell_step_anim(void) {
 int
 sc_shell_reserved_width(struct sc_screen *screen) {
     (void) screen;
-    return (int) (g.anim + 0.5f);
+    // Reserve only a minimum for the video fit; the drawer actually renders from
+    // the video's right edge to the window edge, so it grows with the window.
+    return g.open ? SC_SH_MIN : 0;
 }
 
 // --- rendering ---
@@ -419,7 +433,7 @@ draw_text(SDL_Renderer *r, float x, float y, float px, const char *s, int len,
 
 void
 sc_shell_render(struct sc_screen *screen) {
-    if (g.anim < 1) {
+    if (!g.open) {
         return;
     }
     // Clear the pending flag before snapshotting: any output/echo that lands
@@ -434,8 +448,13 @@ sc_shell_render(struct sc_screen *screen) {
     int w, h;
     SDL_GetWindowSize(screen->window, &w, &h);
 
-    float pw = g.anim;   // panel width (logical)
-    float x0 = w - pw;   // panel on the far right edge
+    // The drawer occupies everything to the right of the video, so it fills any
+    // extra window width.
+    float x0 = screen->rect.x + screen->rect.w;
+    float pw = (float) w - x0;
+    if (pw < 1) {
+        return;
+    }
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 
     // Right-side panel background + left divider.
@@ -588,11 +607,8 @@ sc_shell_handle_event(struct sc_screen *screen, const SDL_Event *event) {
         case SDL_EVENT_MOUSE_WHEEL: {
             float mx, my;
             SDL_GetMouseState(&mx, &my);
-            int w, h;
-            SDL_GetWindowSize(screen->window, &w, &h);
-            (void) h;
-            int rw = sc_shell_reserved_width(screen);
-            if (mx >= w - rw) {
+            float x0 = screen->rect.x + screen->rect.w; // drawer left edge
+            if (mx >= x0) {
                 g.scroll += (int) (event->wheel.y * 3);
                 if (g.scroll < 0) {
                     g.scroll = 0;
