@@ -24,7 +24,6 @@ app/deps/adb_windows.sh
 app/deps/sdl.sh $WINXX cross shared
 app/deps/dav1d.sh $WINXX cross shared
 app/deps/ffmpeg.sh $WINXX cross shared
-app/deps/libusb.sh $WINXX cross shared
 
 DEPS_INSTALL_DIR="$PWD/app/deps/work/install/$WINXX-cross-shared"
 ADB_INSTALL_DIR="$PWD/app/deps/work/install/adb-windows"
@@ -41,13 +40,13 @@ meson setup "$WINXX_BUILD_DIR" \
     --buildtype=release \
     --strip \
     -Db_lto=true \
-    -Dcompile_server=false \
+    -Dcompile_server=false -Dusb=false \
     -Dportable=true
 ninja -C "$WINXX_BUILD_DIR"
 
 # Group intermediate outputs into a 'dist' directory
 mkdir -p "$WINXX_BUILD_DIR/dist"
-cp "$WINXX_BUILD_DIR"/app/scrcpy.exe "$WINXX_BUILD_DIR/dist/"
+cp "$WINXX_BUILD_DIR"/app/scrapy.exe "$WINXX_BUILD_DIR/dist/"
 cp app/data/scrcpy-noconsole.vbs "$WINXX_BUILD_DIR/dist/"
 cp app/data/scrcpy.png "$WINXX_BUILD_DIR/dist/"
 cp app/data/disconnected.png "$WINXX_BUILD_DIR/dist/"

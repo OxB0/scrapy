@@ -40,7 +40,7 @@ ninja -C "$LINUX_BUILD_DIR"
 
 # Assemble a portable dist directory
 mkdir -p "$LINUX_BUILD_DIR/dist/lib"
-cp "$LINUX_BUILD_DIR"/app/scrcpy "$LINUX_BUILD_DIR/dist/"
+cp "$LINUX_BUILD_DIR"/app/scrapy "$LINUX_BUILD_DIR/dist/"
 cp app/data/scrcpy.png "$LINUX_BUILD_DIR/dist/" 2>/dev/null || true
 cp app/data/disconnected.png "$LINUX_BUILD_DIR/dist/" 2>/dev/null || true
 cp -r "$ADB_INSTALL_DIR"/. "$LINUX_BUILD_DIR/dist/" 2>/dev/null || true

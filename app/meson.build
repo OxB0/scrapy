@@ -203,7 +203,7 @@ src_dir = include_directories('src')
 # device picker (src/picker.c) provides the UI instead.
 scrcpy_win_subsystem = host_machine.system() == 'windows' ? 'windows' : 'console'
 
-executable('scrcpy', src,
+executable('scrapy', src,
            dependencies: dependencies,
            include_directories: src_dir,
            install: true,

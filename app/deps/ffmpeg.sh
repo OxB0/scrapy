@@ -48,7 +48,8 @@ else
     conf=(
         --prefix="$INSTALL_DIR/$DIRNAME"
         --pkg-config-flags="--static"
-        --extra-cflags="-O2 -fPIC"
+        --extra-cflags="-O2 -fPIC -I$INSTALL_DIR/$DIRNAME/include"
+        --extra-ldflags="-L$INSTALL_DIR/$DIRNAME/lib"
         --disable-programs
         --disable-doc
         --disable-swscale
@@ -59,11 +60,8 @@ else
         --disable-vaapi
         --disable-vdpau
         --enable-swresample
-        --enable-libdav1d
         --enable-decoder=h264
         --enable-decoder=hevc
-        --enable-decoder=av1
-        --enable-decoder=libdav1d
         --enable-decoder=pcm_s16le
         --enable-decoder=opus
         --enable-decoder=aac
