@@ -14,6 +14,7 @@
 #include "userconf.h"
 #include "events.h"
 #include "font8x8_basic.h"
+#include "logview.h"
 #include "screen.h"
 #include "shell.h"
 #include "util/log.h"
@@ -336,6 +337,9 @@ sc_apps_toggle(struct sc_screen *screen) {
     }
     if (sc_shell_is_open()) {
         sc_shell_close(screen); // share the right-side region
+    }
+    if (sc_logview_is_open()) {
+        sc_logview_close(screen);
     }
     g.open = true;
     g.scroll = 0;

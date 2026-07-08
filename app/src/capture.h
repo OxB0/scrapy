@@ -35,8 +35,4 @@ sc_capture_stay_awake(bool on);
 bool
 sc_capture_awake_is_on(void);
 
-// If a status toast is currently active, copy it into `out` and return true.
-bool
-sc_capture_toast(char *out, size_t out_size);
-
 #endif

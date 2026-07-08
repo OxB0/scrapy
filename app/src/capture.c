@@ -13,6 +13,7 @@
 #include "adb/adb.h"
 #include "userconf.h"
 #include "events.h"
+#include "toast.h"
 #include "util/log.h"
 #include "util/process.h"
 #include "util/thread.h"
@@ -25,10 +26,6 @@ static SDL_AtomicInt g_awake; // device keep-awake state (mirrors the device)
 static sc_pid g_rec_pid;
 static char g_rec_devpath[256];
 static char g_rec_pcpath[600];
-
-static sc_mutex g_toast_mutex;
-static char g_toast[128];
-static Uint64 g_toast_until;
 
 // --- helpers ---
 
@@ -74,24 +71,8 @@ timestamp(char *buf, size_t n) {
 }
 
 static void
-set_toast(const char *msg) {
-    sc_mutex_lock(&g_toast_mutex);
-    snprintf(g_toast, sizeof(g_toast), "%s", msg);
-    g_toast_until = SDL_GetTicks() + 3000;
-    sc_mutex_unlock(&g_toast_mutex);
-    sc_push_event(SC_EVENT_SHELL_UPDATE); // wake the render loop to show it
-}
-
-bool
-sc_capture_toast(char *out, size_t out_size) {
-    bool show = false;
-    sc_mutex_lock(&g_toast_mutex);
-    if (SDL_GetTicks() < g_toast_until) {
-        snprintf(out, out_size, "%s", g_toast);
-        show = true;
-    }
-    sc_mutex_unlock(&g_toast_mutex);
-    return show;
+set_toast(const char *msg, bool error) {
+    sc_toast_show(msg, error);
 }
 
 // Run `adb [-s serial] <tail...>` and block until it finishes. Returns true on
@@ -241,7 +222,8 @@ shot_thread(void *userdata) {
     char path[600];
     home_path(path, sizeof(path), name);
     bool ok = do_screencap(path);
-    set_toast(ok ? "Screenshot saved to home folder" : "Screenshot failed");
+    set_toast(ok ? "Screenshot saved to home folder" : "Screenshot failed",
+              !ok);
     return 0;
 }
 
@@ -270,7 +252,7 @@ rec_stop_thread(void *userdata) {
     const char *rm[] = {"shell", "rm", g_rec_devpath, NULL};
     run_adb(rm);
     SDL_SetAtomicInt(&g_recording, 0);
-    set_toast(ok ? "Recording saved to home folder" : "Recording failed");
+    set_toast(ok ? "Recording saved to home folder" : "Recording failed", !ok);
     return 0;
 }
 
@@ -296,7 +278,7 @@ sc_capture_record_toggle(void) {
 
     const char *adb = capture_adb();
     if (!adb) {
-        set_toast("Could not start recording");
+        set_toast("Could not start recording", true);
         return;
     }
     const char *argv[16];
@@ -314,11 +296,11 @@ sc_capture_record_toggle(void) {
     argv[n] = NULL;
     if (sc_process_execute_p(argv, &g_rec_pid, 0, NULL, NULL, NULL)
             != SC_PROCESS_SUCCESS) {
-        set_toast("Could not start recording");
+        set_toast("Could not start recording", true);
         return;
     }
     SDL_SetAtomicInt(&g_recording, 1);
-    set_toast("Recording... (click Record again to stop)");
+    set_toast("Recording... (click Record again to stop)", false);
 }
 
 bool
@@ -336,9 +318,10 @@ stayawake_thread(void *userdata) {
     bool ok = run_adb(t);
     if (ok) {
         SDL_SetAtomicInt(&g_awake, on ? 1 : 0);
-        set_toast(on ? "Screen will stay awake" : "Screen can sleep again");
+        set_toast(on ? "Screen will stay awake" : "Screen can sleep again",
+                  false);
     } else {
-        set_toast("Could not change keep-awake");
+        set_toast("Could not change keep-awake", true);
     }
     return 0;
 }
@@ -385,8 +368,6 @@ sc_capture_init(const char *serial) {
     }
     SDL_SetAtomicInt(&g_recording, 0);
     SDL_SetAtomicInt(&g_awake, 0);
-    g_toast_until = 0;
-    sc_mutex_init(&g_toast_mutex);
     g_ready = true;
 
     // Read the device's real keep-awake state so the button starts correct.
@@ -408,6 +389,5 @@ sc_capture_destroy(void) {
         sc_process_wait(g_rec_pid, true);
         SDL_SetAtomicInt(&g_recording, 0);
     }
-    sc_mutex_destroy(&g_toast_mutex);
     g_ready = false;
 }

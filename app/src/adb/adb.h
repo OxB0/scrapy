@@ -62,13 +62,25 @@ bool
 sc_adb_reverse_remove(struct sc_intr *intr, const char *serial,
                       const char *device_socket_name, unsigned flags);
 
+/**
+ * Execute `adb push`.
+ *
+ * If `out_msg` is not NULL, `*out_msg` is set to a heap-allocated summary of
+ * adb's output (to be freed by the caller), or NULL if none was captured.
+ */
 bool
 sc_adb_push(struct sc_intr *intr, const char *serial, const char *local,
-            const char *remote, unsigned flags);
+            const char *remote, unsigned flags, char **out_msg);
 
+/**
+ * Execute `adb install -r`.
+ *
+ * If `out_msg` is not NULL, `*out_msg` is set to a heap-allocated summary of
+ * adb's output (e.g. the failure reason), to be freed by the caller, or NULL.
+ */
 bool
 sc_adb_install(struct sc_intr *intr, const char *serial, const char *local,
-               unsigned flags);
+               unsigned flags, char **out_msg);
 
 /**
  * Execute `adb tcpip <port>`

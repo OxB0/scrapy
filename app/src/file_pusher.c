@@ -1,13 +1,27 @@
 #include "file_pusher.h"
 
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "adb/adb.h"
+#include "toast.h"
 #include "util/log.h"
 
 #define DEFAULT_PUSH_TARGET "/sdcard/Download/"
+
+// Last path component, handling both '/' and '\' separators.
+static const char *
+fp_basename(const char *path) {
+    const char *base = path;
+    for (const char *p = path; *p; ++p) {
+        if (*p == '/' || *p == '\\') {
+            base = p + 1;
+        }
+    }
+    return base;
+}
 
 static void
 sc_file_pusher_request_destroy(struct sc_file_pusher_request *req) {
@@ -134,24 +148,47 @@ run_file_pusher(void *data) {
         struct sc_file_pusher_request req = sc_vecdeque_pop(&fp->queue);
         sc_mutex_unlock(&fp->mutex);
 
+        const char *base = fp_basename(req.file);
+        char toast[512];
+        char *detail = NULL;
+
         if (req.action == SC_FILE_PUSHER_ACTION_INSTALL_APK) {
             LOGI("Installing %s...", req.file);
-            bool ok = sc_adb_install(intr, serial, req.file, 0);
+            bool ok = sc_adb_install(intr, serial, req.file, 0, &detail);
             if (ok) {
                 LOGI("%s successfully installed", req.file);
+                snprintf(toast, sizeof(toast), "Installed %s", base);
+                sc_toast_show(toast, false);
             } else {
                 LOGE("Failed to install %s", req.file);
+                if (detail && *detail) {
+                    snprintf(toast, sizeof(toast), "Install failed: %s", detail);
+                } else {
+                    snprintf(toast, sizeof(toast), "Install failed: %s", base);
+                }
+                sc_toast_show(toast, true);
             }
         } else {
             LOGI("Pushing %s...", req.file);
-            bool ok = sc_adb_push(intr, serial, req.file, push_target, 0);
+            bool ok = sc_adb_push(intr, serial, req.file, push_target, 0,
+                                  &detail);
             if (ok) {
                 LOGI("%s successfully pushed to %s", req.file, push_target);
+                snprintf(toast, sizeof(toast), "Copied %s to %s", base,
+                         push_target);
+                sc_toast_show(toast, false);
             } else {
                 LOGE("Failed to push %s to %s", req.file, push_target);
+                if (detail && *detail) {
+                    snprintf(toast, sizeof(toast), "Copy failed: %s", detail);
+                } else {
+                    snprintf(toast, sizeof(toast), "Copy failed: %s", base);
+                }
+                sc_toast_show(toast, true);
             }
         }
 
+        free(detail);
         sc_file_pusher_request_destroy(&req);
     }
     return 0;

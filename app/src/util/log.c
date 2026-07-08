@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <libavutil/log.h>
 
+#include "logview.h"
+
 static SDL_LogPriority
 log_level_sc_to_sdl(enum sc_log_level level) {
     switch (level) {
@@ -147,6 +149,11 @@ sc_sdl_log_print(void *userdata, int category, SDL_LogPriority priority,
     assert(priority < SDL_LOG_PRIORITY_COUNT);
     const char *prio_name = sc_sdl_log_priority_names[priority];
     fprintf(out, "%s: %s\n", prio_name, message);
+
+    // Also feed the in-app log drawer.
+    char line[1024];
+    snprintf(line, sizeof(line), "%s: %s", prio_name, message);
+    sc_logview_push(line);
 }
 
 void
@@ -155,6 +162,7 @@ sc_log_configure(void) {
     SetConsoleOutputCP(CP_UTF8);
 #endif
 
+    sc_logview_init(); // capture logs from here on (before any window exists)
     SDL_SetLogOutputFunction(sc_sdl_log_print, NULL);
     // Redirect FFmpeg logs to SDL logs
     av_log_set_callback(sc_av_log_callback);

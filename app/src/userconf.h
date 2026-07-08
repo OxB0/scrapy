@@ -10,6 +10,7 @@
 enum sc_shortcut {
     SC_SHORTCUT_SHELL,
     SC_SHORTCUT_APPS,
+    SC_SHORTCUT_LOG,
     SC_SHORTCUT_SCREENSHOT,
     SC_SHORTCUT_RECORD,
     SC_SHORTCUT_AWAKE,
@@ -33,10 +34,14 @@ struct sc_config {
     char buttons[512];      // comma-separated button names, or "none"
     int shell_width;        // terminal drawer width (0 = default)
     int apps_width;         // apps/density drawer width (0 = default)
+    int log_width;          // log drawer width (0 = default)
     char capture_dir[512];  // where screenshots/recordings go (empty = home)
     bool pin_on_top;        // start pinned always-on-top
     int default_density;    // set this dpi on connect (0 = leave as-is)
     float terminal_text_size; // terminal font scale (0 = default 1.8)
+    bool notifications;       // show bottom-screen notifications (default true)
+    float notification_time;  // seconds a notification stays (0 = default)
+    float notification_text_size; // notification font scale (0 = default 2.0)
     struct {
         unsigned mod;       // SDL_Keymod mask
         int key;            // SDL_Keycode (0 = unbound)

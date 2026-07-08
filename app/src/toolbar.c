@@ -12,6 +12,10 @@
 #include "control_msg.h"
 #include "controller.h"
 #include "font8x8_basic.h"
+#include "icons_svg.h"
+#include "logview.h"
+#include "nanosvg/nanosvg.h"
+#include "nanosvg/nanosvgrast.h"
 #include "screen.h"
 #include "shell.h"
 #include "util/log.h"
@@ -24,7 +28,8 @@
 enum sc_tb_icon {
     IC_BACK, IC_HOME, IC_RECENTS, IC_MENU, IC_NOTIF,
     IC_VOLUP, IC_VOLDN, IC_ROTATE, IC_POWER, IC_PIN, IC_SHELL,
-    IC_SHOT, IC_REC, IC_APPS, IC_AWAKE,
+    IC_SHOT, IC_REC, IC_APPS, IC_AWAKE, IC_LOG,
+    IC_COUNT,
 };
 
 enum sc_tb_action {
@@ -38,6 +43,7 @@ enum sc_tb_action {
     SC_TB_REC,          // toggle screen recording
     SC_TB_APPS,         // toggle the apps/density drawer
     SC_TB_AWAKE,        // toggle keep-screen-awake
+    SC_TB_LOG,          // toggle the log drawer
 };
 
 struct sc_tb_button {
@@ -57,6 +63,7 @@ static const struct sc_tb_button sc_toolbar_all[] = {
     {IC_AWAKE,   SC_TB_AWAKE,       0,          "Keep awake",  "awake", SC_SHORTCUT_AWAKE},
     {IC_SHELL,   SC_TB_SHELL,       0,          "Shell",       "shell", SC_SHORTCUT_SHELL},
     {IC_APPS,    SC_TB_APPS,        0,      "Apps & density",  "apps",  SC_SHORTCUT_APPS},
+    {IC_LOG,     SC_TB_LOG,         0,          "Log",         "log",   SC_SHORTCUT_LOG},
     {IC_SHOT,    SC_TB_SHOT,        0,          "Screenshot",  "screenshot", SC_SHORTCUT_SCREENSHOT},
     {IC_REC,     SC_TB_REC,         0,          "Record",      "record", SC_SHORTCUT_RECORD},
     {IC_BACK,    SC_TB_BACK_SCREEN, 0,          "Back",        "back",  SC_SHORTCUT_BACK},
@@ -186,186 +193,71 @@ sc_toolbar_button_rect(struct sc_screen *screen, unsigned i,
     *size = s;
 }
 
-// --- drawing helpers (physical pixel coordinates) ---
+// --- icon rendering ---
 
-static SDL_FColor
-fcol(Uint8 r, Uint8 g, Uint8 b) {
-    return (SDL_FColor){r / 255.f, g / 255.f, b / 255.f, 1.f};
-}
+// Each icon is a Lucide SVG (white strokes) rasterized once by nanosvg into a
+// high-resolution mask texture, then drawn at button size as a linear-filtered
+// downscale (anti-aliased) and tinted per state via color-mod.
+#define ICON_PX 256
+static SDL_Texture *g_icon_tex[IC_COUNT];
 
-static void
-fill_tri(SDL_Renderer *r, SDL_FColor c,
-         float ax, float ay, float bx, float by, float cx, float cy) {
-    SDL_Vertex v[3] = {
-        {{ax, ay}, c, {0, 0}},
-        {{bx, by}, c, {0, 0}},
-        {{cx, cy}, c, {0, 0}},
-    };
-    SDL_RenderGeometry(r, NULL, v, 3, NULL, 0);
-}
-
-static void
-fill_fan(SDL_Renderer *r, SDL_FColor c, const float *pts, int n) {
-    // Triangle fan around pts[0].
-    for (int i = 1; i + 1 < n; ++i) {
-        fill_tri(r, c, pts[0], pts[1], pts[i * 2], pts[i * 2 + 1],
-                 pts[(i + 1) * 2], pts[(i + 1) * 2 + 1]);
+static SDL_Texture *
+icon_texture(SDL_Renderer *rr, enum sc_tb_icon ic) {
+    if ((unsigned) ic >= IC_COUNT || !g_icon_svg[ic]) {
+        return NULL;
     }
-}
+    if (g_icon_tex[ic]) {
+        return g_icon_tex[ic];
+    }
 
-static void
-thick_line(SDL_Renderer *r, float x1, float y1, float x2, float y2, float t) {
-    for (float dx = -t; dx <= t; dx += 1.f) {
-        for (float dy = -t; dy <= t; dy += 1.f) {
-            SDL_RenderLine(r, x1 + dx, y1 + dy, x2 + dx, y2 + dy);
+    // nanosvg parses in place, so hand it a mutable copy.
+    char *copy = SDL_strdup(g_icon_svg[ic]);
+    if (!copy) {
+        return NULL;
+    }
+    NSVGimage *img = nsvgParse(copy, "px", 96.f);
+    SDL_free(copy);
+    if (!img) {
+        return NULL;
+    }
+
+    static NSVGrasterizer *rast; // reused across icons; freed at process exit
+    if (!rast) {
+        rast = nsvgCreateRasterizer();
+    }
+    unsigned char *pixels = SDL_calloc(1, ICON_PX * ICON_PX * 4);
+    SDL_Texture *tex = NULL;
+    if (rast && pixels) {
+        float vb = img->width > 0 ? img->width : 24.f; // Lucide viewBox is 24
+        float scale = ICON_PX / vb;
+        nsvgRasterize(rast, img, 0, 0, scale, pixels, ICON_PX, ICON_PX,
+                      ICON_PX * 4);
+        tex = SDL_CreateTexture(rr, SDL_PIXELFORMAT_RGBA32,
+                                SDL_TEXTUREACCESS_STATIC, ICON_PX, ICON_PX);
+        if (tex) {
+            SDL_UpdateTexture(tex, NULL, pixels, ICON_PX * 4);
+            SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+            SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_LINEAR);
         }
     }
+    SDL_free(pixels);
+    nsvgDelete(img);
+    g_icon_tex[ic] = tex;
+    return tex;
 }
 
-static void
-arc(SDL_Renderer *r, float cx, float cy, float rad, float a0, float a1,
-    float t) {
-    const int steps = 24;
-    float px = 0, py = 0;
-    for (int i = 0; i <= steps; ++i) {
-        float a = a0 + (a1 - a0) * i / steps;
-        float x = cx + rad * cosf(a);
-        float y = cy + rad * sinf(a);
-        if (i > 0) {
-            thick_line(r, px, py, x, y, t);
-        }
-        px = x;
-        py = y;
-    }
-}
-
-// Draw the icon for a button, filling its box at (bx,by) size `sz` (logical),
-// scaled by `scale`, in color (r,g,b).
+// Draw an icon into its button box at (bx,by) size `sz` (logical), scaled by
+// `scale`, tinted (r,g,b).
 static void
 draw_icon(SDL_Renderer *rr, enum sc_tb_icon ic, float bx, float by, float sz,
           float scale, Uint8 r, Uint8 g, Uint8 b) {
-#define X(n) ((bx + (n) * sz) * scale)
-#define Y(n) ((by + (n) * sz) * scale)
-#define RECT(x0, y0, x1, y1) do { \
-        SDL_FRect _q = {X(x0), Y(y0), ((x1) - (x0)) * sz * scale, \
-                        ((y1) - (y0)) * sz * scale}; \
-        SDL_RenderFillRect(rr, &_q); \
-    } while (0)
-    SDL_FColor c = fcol(r, g, b);
-    SDL_SetRenderDrawColor(rr, r, g, b, 255);
-    float t = 0.5f * scale;
-
-    switch (ic) {
-        case IC_BACK:
-            fill_tri(rr, c, X(0.62f), Y(0.27f), X(0.34f), Y(0.5f),
-                     X(0.62f), Y(0.73f));
-            break;
-        case IC_HOME:
-            fill_tri(rr, c, X(0.5f), Y(0.23f), X(0.19f), Y(0.54f),
-                     X(0.81f), Y(0.54f));
-            RECT(0.32f, 0.5f, 0.68f, 0.78f);
-            SDL_SetRenderDrawColor(rr, 44, 45, 51, 255); // door cutout
-            RECT(0.45f, 0.6f, 0.55f, 0.78f);
-            break;
-        case IC_RECENTS:
-            RECT(0.30f, 0.30f, 0.70f, 0.37f); // top
-            RECT(0.30f, 0.63f, 0.70f, 0.70f); // bottom
-            RECT(0.30f, 0.30f, 0.37f, 0.70f); // left
-            RECT(0.63f, 0.30f, 0.70f, 0.70f); // right
-            break;
-        case IC_MENU:
-            RECT(0.28f, 0.34f, 0.72f, 0.42f);
-            RECT(0.28f, 0.46f, 0.72f, 0.54f);
-            RECT(0.28f, 0.58f, 0.72f, 0.66f);
-            break;
-        case IC_NOTIF: {
-            float bell[] = {
-                X(0.5f), Y(0.5f),
-                X(0.38f), Y(0.6f), X(0.4f), Y(0.4f), X(0.45f), Y(0.3f),
-                X(0.55f), Y(0.3f), X(0.6f), Y(0.4f), X(0.62f), Y(0.6f),
-            };
-            fill_fan(rr, c, bell, 7);
-            RECT(0.35f, 0.6f, 0.65f, 0.65f); // rim
-            fill_tri(rr, c, X(0.44f), Y(0.66f), X(0.56f), Y(0.66f),
-                     X(0.5f), Y(0.73f)); // clapper
-            break;
-        }
-        case IC_VOLUP:
-            RECT(0.47f, 0.3f, 0.53f, 0.7f);
-            RECT(0.3f, 0.47f, 0.7f, 0.53f);
-            break;
-        case IC_VOLDN:
-            RECT(0.3f, 0.47f, 0.7f, 0.53f);
-            break;
-        case IC_ROTATE:
-            arc(rr, X(0.5f), Y(0.5f), 0.22f * sz * scale, -2.2f, 1.9f, t);
-            fill_tri(rr, c, X(0.5f), Y(0.24f), X(0.4f), Y(0.34f),
-                     X(0.56f), Y(0.36f)); // arrowhead
-            break;
-        case IC_POWER:
-            arc(rr, X(0.5f), Y(0.54f), 0.2f * sz * scale, -1.0f, 4.14f, t);
-            RECT(0.47f, 0.24f, 0.53f, 0.52f);
-            break;
-        case IC_PIN: {
-            // Thumbtack: round head + needle.
-            float head[] = {
-                X(0.5f), Y(0.36f),
-                X(0.38f), Y(0.36f), X(0.4f), Y(0.28f), X(0.5f), Y(0.24f),
-                X(0.6f), Y(0.28f), X(0.62f), Y(0.36f),
-            };
-            fill_fan(rr, c, head, 6);
-            RECT(0.44f, 0.36f, 0.56f, 0.44f); // collar
-            RECT(0.485f, 0.44f, 0.515f, 0.74f); // needle
-            break;
-        }
-        case IC_SHELL:
-            // ">_" prompt
-            thick_line(rr, X(0.3f), Y(0.36f), X(0.44f), Y(0.5f), t);
-            thick_line(rr, X(0.44f), Y(0.5f), X(0.3f), Y(0.64f), t);
-            RECT(0.5f, 0.6f, 0.72f, 0.66f);
-            break;
-        case IC_SHOT:
-            // Camera: body + lens + shutter button.
-            RECT(0.24f, 0.36f, 0.76f, 0.72f);
-            RECT(0.4f, 0.30f, 0.6f, 0.38f); // viewfinder hump
-            SDL_SetRenderDrawColor(rr, 44, 45, 51, 255); // lens cutout
-            RECT(0.42f, 0.46f, 0.58f, 0.64f);
-            SDL_SetRenderDrawColor(rr, r, g, b, 255);
-            RECT(0.64f, 0.40f, 0.71f, 0.45f); // flash
-            break;
-        case IC_REC:
-            // Filled record dot (turns red while recording via the color arg).
-            fill_fan(rr, c, (float[]){
-                X(0.5f), Y(0.5f),
-                X(0.32f), Y(0.5f), X(0.37f), Y(0.35f), X(0.5f), Y(0.3f),
-                X(0.63f), Y(0.35f), X(0.68f), Y(0.5f), X(0.63f), Y(0.65f),
-                X(0.5f), Y(0.7f), X(0.37f), Y(0.65f), X(0.32f), Y(0.5f),
-            }, 10);
-            break;
-        case IC_APPS:
-            // 2x2 grid of app tiles.
-            RECT(0.28f, 0.28f, 0.46f, 0.46f);
-            RECT(0.54f, 0.28f, 0.72f, 0.46f);
-            RECT(0.28f, 0.54f, 0.46f, 0.72f);
-            RECT(0.54f, 0.54f, 0.72f, 0.72f);
-            break;
-        case IC_AWAKE:
-            // Sun: filled centre + cardinal + diagonal rays.
-            fill_fan(rr, c, (float[]){
-                X(0.5f), Y(0.5f),
-                X(0.36f), Y(0.5f), X(0.4f), Y(0.4f), X(0.5f), Y(0.36f),
-                X(0.6f), Y(0.4f), X(0.64f), Y(0.5f), X(0.6f), Y(0.6f),
-                X(0.5f), Y(0.64f), X(0.4f), Y(0.6f), X(0.36f), Y(0.5f),
-            }, 10);
-            RECT(0.47f, 0.16f, 0.53f, 0.26f); // top ray
-            RECT(0.47f, 0.74f, 0.53f, 0.84f); // bottom ray
-            RECT(0.16f, 0.47f, 0.26f, 0.53f); // left ray
-            RECT(0.74f, 0.47f, 0.84f, 0.53f); // right ray
-            break;
+    SDL_Texture *tex = icon_texture(rr, ic);
+    if (!tex) {
+        return;
     }
-#undef X
-#undef Y
-#undef RECT
+    SDL_SetTextureColorMod(tex, r, g, b);
+    SDL_FRect dst = {bx * scale, by * scale, sz * scale, sz * scale};
+    SDL_RenderTexture(rr, tex, NULL, &dst);
 }
 
 static void
@@ -431,6 +323,7 @@ sc_toolbar_render(struct sc_screen *screen) {
         bool active = (sc_toolbar[i].action == SC_TB_PIN && sc_tb_pinned)
                    || (sc_toolbar[i].action == SC_TB_SHELL && sc_shell_is_open())
                    || (sc_toolbar[i].action == SC_TB_APPS && sc_apps_is_open())
+                   || (sc_toolbar[i].action == SC_TB_LOG && sc_logview_is_open())
                    || (sc_toolbar[i].action == SC_TB_AWAKE
                        && sc_capture_awake_is_on())
                    || recording;
@@ -490,26 +383,8 @@ sc_toolbar_render(struct sc_screen *screen) {
         draw_text(renderer, boxx + padx, boxy + pady, px, label,
                   235, 236, 240);
     }
-
-    // Transient status toast (screenshot/record feedback), centered near the
-    // bottom of the video area.
-    char toast[128];
-    if (sc_capture_toast(toast, sizeof(toast))) {
-        float px = SDL_max(2.f, roundf(1.5f * scale));
-        float tw = strlen(toast) * 8 * px;
-        float padx = 12 * scale, pady = 7 * scale;
-        float boxw = tw + 2 * padx;
-        float boxh = 8 * px + 2 * pady;
-        float boxx = (gutter * scale) + ((float) w * scale - gutter * scale
-                                         - boxw) / 2.f;
-        float boxy = (float) h * scale - boxh - 24 * scale;
-        SDL_FRect box = {boxx, boxy, boxw, boxh};
-        SDL_SetRenderDrawColor(renderer, 20, 20, 24, 235);
-        SDL_RenderFillRect(renderer, &box);
-        SDL_SetRenderDrawColor(renderer, 90, 92, 100, 255);
-        SDL_RenderRect(renderer, &box);
-        draw_text(renderer, boxx + padx, boxy + pady, px, toast, 235, 236, 240);
-    }
+    // Status toasts (screenshot/record/install/copy feedback) are drawn by the
+    // shared toast module in sc_screen_render.
 }
 
 // --- actions ---
@@ -596,6 +471,9 @@ sc_toolbar_do(struct sc_screen *screen, const struct sc_tb_button *btn) {
             break;
         case SC_TB_AWAKE:
             sc_capture_stay_awake(!sc_capture_awake_is_on());
+            break;
+        case SC_TB_LOG:
+            sc_logview_toggle(screen);
             break;
     }
 }

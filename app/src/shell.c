@@ -16,6 +16,7 @@
 #include "userconf.h"
 #include "events.h"
 #include "font8x16_basic.h"
+#include "logview.h"
 #include "screen.h"
 #include "toolbar.h"
 #include "util/log.h"
@@ -329,8 +330,14 @@ sc_shell_toggle(struct sc_screen *screen) {
     if (!g.ready) {
         return;
     }
-    if (!g.open && sc_apps_is_open()) {
-        sc_apps_close(screen); // share the right-side region
+    if (!g.open) {
+        // Share the right-side region with the other drawers.
+        if (sc_apps_is_open()) {
+            sc_apps_close(screen);
+        }
+        if (sc_logview_is_open()) {
+            sc_logview_close(screen);
+        }
     }
     g.open = !g.open;
     int w, h;
@@ -379,6 +386,81 @@ sc_shell_reserved_width(struct sc_screen *screen) {
     // Reserve only a minimum for the video fit; the drawer actually renders from
     // the video's right edge to the window edge, so it grows with the window.
     return g.open ? SC_SH_MIN : 0;
+}
+
+// --- selection ---
+
+static bool sel_dragging; // mouse button held, extending selection
+static bool sel_present;  // a completed (or in-progress) selection exists
+static int sel_r1, sel_c1; // anchor point (row-from-bottom, column)
+static int sel_r2, sel_c2; // moving point
+
+// Render parameters saved for the event handler's coordinate mapping.
+static float rp_left, rp_px, rp_area_bot, rp_line_h, rp_x0, rp_scale;
+static int rp_cols, rp_out_rows, rp_scroll;
+
+// Display rows: promoted to file scope so copy can read them.
+static char dr[SC_SH_MAXDR][SC_SH_COLS];
+static int dr_len[SC_SH_MAXDR];
+static int dr_cursor[SC_SH_MAXDR];
+static int g_ndr;
+
+static void
+sel_mouse_to_cell(float mx, float my, int *out_row, int *out_col) {
+    int col = (int) ((mx * rp_scale - rp_left) / (8 * rp_px));
+    if (col < 0) col = 0;
+    if (col > rp_cols) col = rp_cols;
+    int row = (int) ((rp_area_bot - my * rp_scale) / rp_line_h);
+    if (row < 0) row = 0;
+    *out_row = row;
+    *out_col = col;
+}
+
+static void
+sel_order(int *r1, int *c1, int *r2, int *c2) {
+    // Normalize so (r1,c1) is the earlier text (higher row-from-bottom).
+    if (sel_r1 > sel_r2 || (sel_r1 == sel_r2 && sel_c1 <= sel_c2)) {
+        *r1 = sel_r1; *c1 = sel_c1;
+        *r2 = sel_r2; *c2 = sel_c2;
+    } else {
+        *r1 = sel_r2; *c1 = sel_c2;
+        *r2 = sel_r1; *c2 = sel_c1;
+    }
+}
+
+static void
+sel_copy_to_clipboard(void) {
+    if (!sel_present) return;
+    int r1, c1, r2, c2;
+    sel_order(&r1, &c1, &r2, &c2);
+
+    char buf[SC_SH_MAXDR * (SC_SH_COLS + 1)];
+    int pos = 0;
+    // Iterate from the top of the selection (higher row-from-bottom) downward.
+    for (int r = r1; r >= r2; --r) {
+        int di = rp_scroll + r;
+        if (di < 0 || di >= g_ndr) continue;
+        int start = (r == r1) ? c1 : 0;
+        int end = (r == r2) ? c2 : dr_len[di];
+        if (start > dr_len[di]) start = dr_len[di];
+        if (end > dr_len[di]) end = dr_len[di];
+        if (start < 0) start = 0;
+        if (end < start) end = start;
+        for (int i = start; i < end; ++i) {
+            if (pos < (int) sizeof(buf) - 2) {
+                buf[pos++] = dr[di][i];
+            }
+        }
+        // Trim trailing spaces from this row.
+        while (pos > 0 && buf[pos - 1] == ' ') pos--;
+        if (r > r2 && pos < (int) sizeof(buf) - 2) {
+            buf[pos++] = '\n';
+        }
+    }
+    buf[pos] = '\0';
+    if (pos > 0) {
+        SDL_SetClipboardText(buf);
+    }
 }
 
 // --- rendering ---
@@ -505,10 +587,7 @@ sc_shell_render(struct sc_screen *screen) {
     // never blocks the reader thread), then draw them outside it. Each logical
     // line expands into ceil(len/cols) wrapped rows; the live line (cur) also
     // carries the cursor.
-    static char dr[SC_SH_MAXDR][SC_SH_COLS];
-    static int dr_len[SC_SH_MAXDR];
-    static int dr_cursor[SC_SH_MAXDR]; // cursor column in this row, or -1
-    int ndr = 0;
+    g_ndr = 0;
     int scroll;
 
     sc_mutex_lock(&g.mutex);
@@ -539,7 +618,7 @@ sc_shell_render(struct sc_screen *screen) {
     scroll = g.scroll;
 
     int need = out_rows + scroll;
-    for (int idx = total - 1; idx >= 0 && ndr < need && ndr < SC_SH_MAXDR; --idx) {
+    for (int idx = total - 1; idx >= 0 && g_ndr < need && g_ndr < SC_SH_MAXDR; --idx) {
         bool live = idx >= g.count;
         const char *p = live ? g.cur : g.lines[(g.head + idx) % SC_SH_LINES];
         int len = live ? g.curlen : g.lens[(g.head + idx) % SC_SH_LINES];
@@ -555,7 +634,7 @@ sc_shell_render(struct sc_screen *screen) {
             }
         }
         // Emit this line's segments bottom (last) to top (first).
-        for (int k = rows - 1; k >= 0 && ndr < need && ndr < SC_SH_MAXDR; --k) {
+        for (int k = rows - 1; k >= 0 && g_ndr < need && g_ndr < SC_SH_MAXDR; --k) {
             int off = k * cols;
             int seglen = len - off;
             if (seglen < 0) {
@@ -564,20 +643,52 @@ sc_shell_render(struct sc_screen *screen) {
             if (seglen > cols) {
                 seglen = cols;
             }
-            memcpy(dr[ndr], p + off, seglen);
-            dr_len[ndr] = seglen;
-            dr_cursor[ndr] = (live && k == curseg) ? (curcol - off) : -1;
-            ndr++;
+            memcpy(dr[g_ndr], p + off, seglen);
+            dr_len[g_ndr] = seglen;
+            dr_cursor[g_ndr] = (live && k == curseg) ? (curcol - off) : -1;
+            g_ndr++;
         }
     }
     sc_mutex_unlock(&g.mutex);
+
+    // Save render params so the event handler can map mouse → cell.
+    rp_left = left;
+    rp_px = px;
+    rp_area_bot = area_bot;
+    rp_line_h = line_h;
+    rp_x0 = x0;
+    rp_scale = scale;
+    rp_cols = cols;
+    rp_out_rows = out_rows;
+    rp_scroll = scroll;
+
+    // Selection bounds (normalized).
+    int sr1 = -1, sc1 = 0, sr2 = -1, sc2 = 0;
+    if (sel_present) {
+        sel_order(&sr1, &sc1, &sr2, &sc2);
+    }
 
     // dr[0] is the bottom-most row; the viewport bottom is dr[scroll].
     float y = area_bot - line_h;
     for (int i = 0; i < out_rows; ++i) {
         int di = scroll + i;
-        if (di >= ndr) {
+        if (di >= g_ndr) {
             break;
+        }
+        // Selection highlight for this row (i = row-from-bottom).
+        if (sel_present && i >= sr2 && i <= sr1) {
+            int hs = 0, he = dr_len[di];
+            if (i == sr1 && i == sr2) { hs = sc1; he = sc2; }
+            else if (i == sr1) { hs = sc1; }
+            else if (i == sr2) { he = sc2; }
+            if (hs < 0) hs = 0;
+            if (he > cols) he = cols;
+            if (he > hs) {
+                SDL_FRect sel_rect = {left + hs * char_w, y,
+                                      (he - hs) * char_w, line_h};
+                SDL_SetRenderDrawColor(renderer, 60, 100, 180, 120);
+                SDL_RenderFillRect(renderer, &sel_rect);
+            }
         }
         draw_text(renderer, left, y, px, dr[di], dr_len[di], 205, 207, 212);
         if (dr_cursor[di] >= 0) {
@@ -599,6 +710,94 @@ send_seq(const char *s) {
     shell_write(s, (int) strlen(s));
 }
 
+// Force US-QWERTY output so the shell always receives English/ASCII no matter
+// what OS keyboard layout is active (e.g. Hebrew). We translate the physical
+// key (scancode) ourselves instead of trusting SDL_EVENT_TEXT_INPUT, which
+// yields layout-dependent characters. Returns 0 for non-printable keys.
+static char
+sh_scancode_ascii(SDL_Scancode sc, bool shift, bool caps) {
+    if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z) {
+        char base = (char) ('a' + (sc - SDL_SCANCODE_A));
+        bool upper = shift ^ caps; // caps lock only affects letters
+        return upper ? (char) (base - 32) : base;
+    }
+    switch (sc) {
+        case SDL_SCANCODE_1: return shift ? '!' : '1';
+        case SDL_SCANCODE_2: return shift ? '@' : '2';
+        case SDL_SCANCODE_3: return shift ? '#' : '3';
+        case SDL_SCANCODE_4: return shift ? '$' : '4';
+        case SDL_SCANCODE_5: return shift ? '%' : '5';
+        case SDL_SCANCODE_6: return shift ? '^' : '6';
+        case SDL_SCANCODE_7: return shift ? '&' : '7';
+        case SDL_SCANCODE_8: return shift ? '*' : '8';
+        case SDL_SCANCODE_9: return shift ? '(' : '9';
+        case SDL_SCANCODE_0: return shift ? ')' : '0';
+        case SDL_SCANCODE_SPACE: return ' ';
+        case SDL_SCANCODE_MINUS: return shift ? '_' : '-';
+        case SDL_SCANCODE_EQUALS: return shift ? '+' : '=';
+        case SDL_SCANCODE_LEFTBRACKET: return shift ? '{' : '[';
+        case SDL_SCANCODE_RIGHTBRACKET: return shift ? '}' : ']';
+        case SDL_SCANCODE_BACKSLASH: return shift ? '|' : '\\';
+        case SDL_SCANCODE_SEMICOLON: return shift ? ':' : ';';
+        case SDL_SCANCODE_APOSTROPHE: return shift ? '"' : '\'';
+        case SDL_SCANCODE_GRAVE: return shift ? '~' : '`';
+        case SDL_SCANCODE_COMMA: return shift ? '<' : ',';
+        case SDL_SCANCODE_PERIOD: return shift ? '>' : '.';
+        case SDL_SCANCODE_SLASH: return shift ? '?' : '/';
+        default: return 0;
+    }
+}
+
+// Paste clipboard text into the shell. A large paste (many lines or long) is a
+// classic accident/paste-bomb, so confirm with a modal before sending it.
+static void
+shell_paste(struct sc_screen *screen) {
+    char *clip = SDL_GetClipboardText();
+    if (!clip) {
+        return;
+    }
+    if (!*clip) {
+        SDL_free(clip);
+        return;
+    }
+    int len = (int) strlen(clip);
+    int lines = 1;
+    for (const char *p = clip; *p; ++p) {
+        if (*p == '\n') {
+            lines++;
+        }
+    }
+    if (lines > 30 || len > 3000) {
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "Paste %d characters over %d lines into the shell?",
+                 len, lines);
+        const SDL_MessageBoxButtonData buttons[] = {
+            {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Paste"},
+            {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Cancel"},
+        };
+        const SDL_MessageBoxData mbd = {
+            SDL_MESSAGEBOX_WARNING,
+            screen->window,
+            "Confirm paste",
+            msg,
+            SDL_arraysize(buttons),
+            buttons,
+            NULL,
+        };
+        int btn = 0;
+        if (!SDL_ShowMessageBox(&mbd, &btn) || btn != 1) {
+            SDL_free(clip);
+            return;
+        }
+    }
+    shell_write(clip, len);
+    SDL_free(clip);
+    g.scroll = 0;
+    sel_present = false;
+    shell_wake();
+}
+
 bool
 sc_shell_handle_event(struct sc_screen *screen, const SDL_Event *event) {
     if (!g.open) {
@@ -606,27 +805,87 @@ sc_shell_handle_event(struct sc_screen *screen, const SDL_Event *event) {
     }
     switch (event->type) {
         case SDL_EVENT_TEXT_INPUT:
-            // Character mode: forward typed text to the PTY, which echoes it
-            // inline after its own prompt.
-            shell_write(event->text.text, (int) strlen(event->text.text));
-            g.scroll = 0;
-            shell_wake();
+            // Printable input is generated from scancodes in KEY_DOWN (so the
+            // shell always gets US-QWERTY ASCII regardless of the OS layout);
+            // swallow TEXT_INPUT so nothing is typed twice or in another script.
             return true;
-        case SDL_EVENT_MOUSE_WHEEL: {
-            float mx, my;
-            SDL_GetMouseState(&mx, &my);
-            float x0 = screen->rect.x + screen->rect.w; // drawer left edge
-            if (mx >= x0) {
-                g.scroll += (int) (event->wheel.y * 3);
-                if (g.scroll < 0) {
-                    g.scroll = 0;
+        case SDL_EVENT_MOUSE_BUTTON_DOWN: {
+            float x0 = screen->rect.x + screen->rect.w;
+            if (event->button.x < x0) return false;
+            if (event->button.button == SDL_BUTTON_LEFT) {
+                sel_dragging = true;
+                sel_present = true;
+                sel_mouse_to_cell(event->button.x, event->button.y,
+                                  &sel_r1, &sel_c1);
+                sel_r2 = sel_r1;
+                sel_c2 = sel_c1;
+                shell_wake();
+                return true;
+            }
+            if (event->button.button == SDL_BUTTON_RIGHT) {
+                // Right-click copies the selection, or pastes when none.
+                if (sel_present) {
+                    sel_copy_to_clipboard();
+                    sel_present = false;
+                    shell_wake();
+                } else {
+                    shell_paste(screen);
+                }
+                return true;
+            }
+            return false;
+        }
+        case SDL_EVENT_MOUSE_MOTION: {
+            if (sel_dragging) {
+                sel_mouse_to_cell(event->motion.x, event->motion.y,
+                                  &sel_r2, &sel_c2);
+                shell_wake();
+                return true;
+            }
+            return false;
+        }
+        case SDL_EVENT_MOUSE_BUTTON_UP: {
+            if (event->button.button == SDL_BUTTON_LEFT && sel_dragging) {
+                sel_dragging = false;
+                sel_mouse_to_cell(event->button.x, event->button.y,
+                                  &sel_r2, &sel_c2);
+                if (sel_r1 == sel_r2 && sel_c1 == sel_c2) {
+                    sel_present = false;
                 }
                 shell_wake();
                 return true;
             }
             return false;
         }
-        case SDL_EVENT_KEY_DOWN:
+        case SDL_EVENT_MOUSE_WHEEL: {
+            float mx, my;
+            SDL_GetMouseState(&mx, &my);
+            float x0 = screen->rect.x + screen->rect.w;
+            if (mx >= x0) {
+                g.scroll += (int) (event->wheel.y * 3);
+                if (g.scroll < 0) {
+                    g.scroll = 0;
+                }
+                sel_present = false;
+                shell_wake();
+                return true;
+            }
+            return false;
+        }
+        case SDL_EVENT_DROP_TEXT: {
+            // Text dragged from another app and dropped onto the drawer: paste
+            // it into the shell (DROP_FILE is left to the mirror's file pusher).
+            float x0 = screen->rect.x + screen->rect.w;
+            if (event->drop.x >= x0 && event->drop.data) {
+                shell_write(event->drop.data, (int) strlen(event->drop.data));
+                g.scroll = 0;
+                sel_present = false;
+                shell_wake();
+                return true;
+            }
+            return false;
+        }
+        case SDL_EVENT_KEY_DOWN: {
             // Scrollback and drawer control stay local.
             if (event->key.key == SDLK_PAGEUP) {
                 g.scroll += 8;
@@ -647,6 +906,8 @@ sc_shell_handle_event(struct sc_screen *screen, const SDL_Event *event) {
             }
             g.scroll = 0; // any key that goes to the shell jumps to the bottom
             shell_wake(); // repaint now, don't wait for the PTY echo round-trip
+            // Navigation / control keys are not layout-dependent, so key them
+            // off the (virtual) keycode.
             switch (event->key.key) {
                 case SDLK_RETURN:
                 case SDLK_KP_ENTER: send_seq("\n"); return true;
@@ -659,28 +920,54 @@ sc_shell_handle_event(struct sc_screen *screen, const SDL_Event *event) {
                 case SDLK_HOME: send_seq("\x1b[H"); return true;
                 case SDLK_END: send_seq("\x1b[F"); return true;
                 case SDLK_DELETE: send_seq("\x1b[3~"); return true;
-                case SDLK_C:
-                    if (event->key.mod & SDL_KMOD_CTRL) {
+                default: break;
+            }
+
+            // Printable keys and Ctrl combos are resolved from the PHYSICAL key
+            // (scancode), so they behave identically under any OS layout (e.g.
+            // Hebrew): the shell always receives US-QWERTY ASCII.
+            SDL_Scancode sc = event->key.scancode;
+            bool ctrl = event->key.mod & SDL_KMOD_CTRL;
+            bool shift = event->key.mod & SDL_KMOD_SHIFT;
+            bool alt = event->key.mod & SDL_KMOD_ALT;
+            bool gui = event->key.mod & SDL_KMOD_GUI;
+            bool caps = event->key.mod & SDL_KMOD_CAPS;
+
+            if (ctrl && !alt && !gui) {
+                if (sc == SDL_SCANCODE_V) {
+                    shell_paste(screen);
+                    return true;
+                }
+                if (sc == SDL_SCANCODE_C) {
+                    // Copy the selection (or Ctrl+Shift+C), else send SIGINT.
+                    if (sel_present || shift) {
+                        sel_copy_to_clipboard();
+                        sel_present = false;
+                        shell_wake();
+                    } else {
                         send_seq("\x03");
                     }
                     return true;
-                case SDLK_D:
-                    if (event->key.mod & SDL_KMOD_CTRL) {
-                        send_seq("\x04");
-                    }
+                }
+                // Any other Ctrl+letter -> its control code (Ctrl+A..Z =
+                // 0x01..0x1A): gives the shell Ctrl+L, Ctrl+U, Ctrl+A/E/W/Z/R...
+                if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z) {
+                    char ctl = (char) (1 + (sc - SDL_SCANCODE_A));
+                    shell_write(&ctl, 1);
                     return true;
-                case SDLK_V:
-                    if (event->key.mod & SDL_KMOD_CTRL) {
-                        char *clip = SDL_GetClipboardText();
-                        if (clip) {
-                            shell_write(clip, (int) strlen(clip));
-                            SDL_free(clip);
-                        }
-                    }
-                    return true;
-                default:
-                    return true; // consume all keys while the shell is open
+                }
+                return true; // consume other Ctrl combos
             }
+
+            if (!alt && !gui) {
+                char ch = sh_scancode_ascii(sc, shift, caps);
+                if (ch) {
+                    shell_write(&ch, 1);
+                    return true;
+                }
+            }
+            return true; // consume all keys while the shell is open
+        }
         default:
             return false;
     }

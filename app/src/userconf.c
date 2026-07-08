@@ -70,6 +70,8 @@ set_default_shortcuts(void) {
     sc_conf.shortcuts[SC_SHORTCUT_APPS].key = SDLK_A;
     sc_conf.shortcuts[SC_SHORTCUT_SHELL].mod = as;
     sc_conf.shortcuts[SC_SHORTCUT_SHELL].key = SDLK_T;
+    sc_conf.shortcuts[SC_SHORTCUT_LOG].mod = as;
+    sc_conf.shortcuts[SC_SHORTCUT_LOG].key = SDLK_L;
     sc_conf.shortcuts[SC_SHORTCUT_SCREENSHOT].mod = as;
     sc_conf.shortcuts[SC_SHORTCUT_SCREENSHOT].key = SDLK_S;
     sc_conf.shortcuts[SC_SHORTCUT_RECORD].mod = as;
@@ -139,6 +141,7 @@ static int
 shortcut_index(const char *name) {
     if (!strcmp(name, "shell")) return SC_SHORTCUT_SHELL;
     if (!strcmp(name, "apps")) return SC_SHORTCUT_APPS;
+    if (!strcmp(name, "log")) return SC_SHORTCUT_LOG;
     if (!strcmp(name, "screenshot")) return SC_SHORTCUT_SCREENSHOT;
     if (!strcmp(name, "record")) return SC_SHORTCUT_RECORD;
     if (!strcmp(name, "awake")) return SC_SHORTCUT_AWAKE;
@@ -167,9 +170,9 @@ static const char *DEFAULT_TEMPLATE =
     "\n"
     "# Which buttons to show, comma-separated, in the order given.\n"
     "# Use \"none\" for no toolbar at all.\n"
-    "# Names: pin, awake, shell, apps, screenshot, record, back, home, recents,\n"
-    "#        menu, notifications, volup, voldown, rotate, power\n"
-    "# buttons = pin,awake,shell,apps,screenshot,record,back,home,recents,menu,notifications,volup,voldown,rotate,power\n"
+    "# Names: pin, awake, shell, apps, log, screenshot, record, back, home,\n"
+    "#        recents, menu, notifications, volup, voldown, rotate, power\n"
+    "# buttons = pin,awake,shell,apps,log,screenshot,record,back,home,recents,menu,notifications,volup,voldown,rotate,power\n"
     "\n"
     "# Start with the window pinned always-on-top.\n"
     "# pin_on_top = false\n"
@@ -179,6 +182,7 @@ static const char *DEFAULT_TEMPLATE =
     "# Width (px) the window grows by when a drawer opens.\n"
     "# shell_width = 600\n"
     "# apps_width = 600\n"
+    "# log_width = 760\n"
     "\n"
     "# Terminal font size multiplier (larger = bigger text).\n"
     "# terminal_text_size = 1.8\n"
@@ -187,6 +191,18 @@ static const char *DEFAULT_TEMPLATE =
     "\n"
     "# Folder for screenshots and recordings (default: your home folder).\n"
     "# capture_dir = C:\\Users\\You\\Pictures\n"
+    "\n"
+    "# ----- Notifications -----------------------------------------------------\n"
+    "\n"
+    "# Show a message at the bottom of the window after actions (install a file,\n"
+    "# copy a file, screenshot, recording). Set to false to hide them all.\n"
+    "# notifications = true\n"
+    "\n"
+    "# How long (seconds) a notification stays on screen.\n"
+    "# notification_time = 7\n"
+    "\n"
+    "# Notification text size multiplier (larger = bigger text).\n"
+    "# notification_text_size = 2.0\n"
     "\n"
     "# ----- Device ------------------------------------------------------------\n"
     "\n"
@@ -201,6 +217,7 @@ static const char *DEFAULT_TEMPLATE =
     "# Custom buttons:\n"
     "# key_shell = alt+shift+t\n"
     "# key_apps = alt+a\n"
+    "# key_log = alt+shift+l\n"
     "# key_screenshot = alt+shift+s\n"
     "# key_record = alt+shift+r\n"
     "# key_awake = alt+shift+k\n"
@@ -276,6 +293,7 @@ sc_config_load(void) {
     // defaults
     memset(&sc_conf, 0, sizeof(sc_conf));
     set_default_shortcuts();
+    sc_conf.notifications = true; // on unless explicitly disabled
 
     char path[1024];
     config_path(path, sizeof(path));
@@ -311,6 +329,8 @@ sc_config_load(void) {
             sc_conf.shell_width = atoi(val);
         } else if (!strcmp(key, "apps_width")) {
             sc_conf.apps_width = atoi(val);
+        } else if (!strcmp(key, "log_width")) {
+            sc_conf.log_width = atoi(val);
         } else if (!strcmp(key, "capture_dir")) {
             snprintf(sc_conf.capture_dir, sizeof(sc_conf.capture_dir), "%s",
                      val);
@@ -320,6 +340,12 @@ sc_config_load(void) {
             sc_conf.default_density = atoi(val);
         } else if (!strcmp(key, "terminal_text_size")) {
             sc_conf.terminal_text_size = (float) atof(val);
+        } else if (!strcmp(key, "notifications")) {
+            sc_conf.notifications = is_true(val);
+        } else if (!strcmp(key, "notification_time")) {
+            sc_conf.notification_time = (float) atof(val);
+        } else if (!strcmp(key, "notification_text_size")) {
+            sc_conf.notification_text_size = (float) atof(val);
         } else if (!strncmp(key, "key_", 4)) {
             int idx = shortcut_index(key + 4);
             if (idx >= 0) {

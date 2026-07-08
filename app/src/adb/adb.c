@@ -328,28 +328,110 @@ sc_adb_reverse_remove(struct sc_intr *intr, const char *serial,
     return process_check_success_intr(intr, pid, "adb reverse --remove", flags);
 }
 
+// Spawn adb keeping its stderr on a pipe (`*perr`) so the caller can read the
+// failure reason / transfer summary; stdout stays inherited as usual.
+static sc_pid
+sc_adb_execute_perr(const char *const argv[], unsigned flags, sc_pipe *perr) {
+    unsigned process_flags = 0;
+    if (flags & SC_ADB_NO_STDOUT) {
+        process_flags |= SC_PROCESS_NO_STDOUT;
+    }
+
+    sc_pid pid;
+    enum sc_process_result r =
+        sc_process_execute_p(argv, &pid, process_flags, NULL, NULL, perr);
+    if (r != SC_PROCESS_SUCCESS) {
+        show_adb_err_msg(r, argv);
+        pid = SC_PROCESS_NONE;
+    }
+
+    return pid;
+}
+
+// Heap-copy the last non-empty line of `buf` (trimmed), or NULL. adb prints its
+// most informative message (the failure reason, or the push summary) last.
+static char *
+sc_adb_last_line(const char *buf) {
+    const char *end = buf + strlen(buf);
+    while (end > buf && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' '
+                         || end[-1] == '\t')) {
+        --end;
+    }
+    const char *start = end;
+    while (start > buf && start[-1] != '\n' && start[-1] != '\r') {
+        --start;
+    }
+    size_t n = end - start;
+    if (!n) {
+        return NULL;
+    }
+    char *s = malloc(n + 1);
+    if (!s) {
+        return NULL;
+    }
+    memcpy(s, start, n);
+    s[n] = '\0';
+    return s;
+}
+
+// Run adb, capturing stderr into *out_msg (last line). Shared by push/install.
+static bool
+sc_adb_run_capture(struct sc_intr *intr, const char *const argv[],
+                   const char *name, unsigned flags, char **out_msg) {
+    sc_pipe perr;
+    sc_pid pid = sc_adb_execute_perr(argv, flags, &perr);
+    if (pid == SC_PROCESS_NONE) {
+        return false;
+    }
+
+    char buf[2048];
+    ssize_t r = sc_pipe_read_all_intr(intr, pid, perr, buf, sizeof(buf) - 1);
+    sc_pipe_close(perr);
+
+    bool ok = process_check_success_intr(intr, pid, name, flags);
+
+    if (out_msg && r > 0) {
+        buf[r] = '\0';
+        *out_msg = sc_adb_last_line(buf);
+    }
+    return ok;
+}
+
 bool
 sc_adb_push(struct sc_intr *intr, const char *serial, const char *local,
-            const char *remote, unsigned flags) {
+            const char *remote, unsigned flags, char **out_msg) {
     assert(serial);
+    if (out_msg) {
+        *out_msg = NULL;
+    }
     const char *const argv[] =
         SC_ADB_COMMAND("-s", serial, "push", local, remote);
 
-    sc_pid pid = sc_adb_execute(argv, flags);
+    if (!out_msg) {
+        // No captured output requested: keep the plain, stderr-inherited path.
+        sc_pid pid = sc_adb_execute(argv, flags);
+        return process_check_success_intr(intr, pid, "adb push", flags);
+    }
 
-    return process_check_success_intr(intr, pid, "adb push", flags);
+    return sc_adb_run_capture(intr, argv, "adb push", flags, out_msg);
 }
 
 bool
 sc_adb_install(struct sc_intr *intr, const char *serial, const char *local,
-               unsigned flags) {
+               unsigned flags, char **out_msg) {
     assert(serial);
+    if (out_msg) {
+        *out_msg = NULL;
+    }
     const char *const argv[] =
         SC_ADB_COMMAND("-s", serial, "install", "-r", local);
 
-    sc_pid pid = sc_adb_execute(argv, flags);
+    if (!out_msg) {
+        sc_pid pid = sc_adb_execute(argv, flags);
+        return process_check_success_intr(intr, pid, "adb install", flags);
+    }
 
-    return process_check_success_intr(intr, pid, "adb install", flags);
+    return sc_adb_run_capture(intr, argv, "adb install", flags, out_msg);
 }
 
 bool

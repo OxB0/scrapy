@@ -22,6 +22,7 @@ enum {
     SC_EVENT_DISCONNECTED_ICON_LOADED,
     SC_EVENT_DISCONNECTED_TIMEOUT,
     SC_EVENT_SHELL_UPDATE, // shell output/input changed: repaint the overlay
+    SC_EVENT_TOAST, // transient bottom-screen message (data1: heap msg or NULL)
 };
 
 bool

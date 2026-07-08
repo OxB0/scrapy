@@ -157,7 +157,7 @@ pk_text(SDL_Renderer *r, float x, float y, float px, const char *s,
     }
 }
 
-#define PK_W 460
+#define PK_W 640
 #define PK_ROW_Y 70
 #define PK_ROW_H 46
 #define PK_ROW_GAP 8
@@ -316,13 +316,13 @@ sc_picker_run(char **out_serial) {
         if (ndev == 0) {
             if (pending > 0) {
                 pk_text(ren, 20, 24, 2.f, "Device connecting...", 220, 222, 228);
-                pk_text(ren, 20, 60, 1.5f,
+                pk_text(ren, 20, 60, 1.4f,
                         "If prompted, allow USB debugging on the phone.",
                         150, 152, 160);
             } else {
                 pk_text(ren, 20, 24, 2.f, "Waiting for a device...",
                         220, 222, 228);
-                pk_text(ren, 20, 60, 1.5f,
+                pk_text(ren, 20, 60, 1.4f,
                         "Connect a device over USB (with USB debugging on).",
                         150, 152, 160);
             }

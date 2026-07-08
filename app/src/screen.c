@@ -10,6 +10,8 @@
 #include "apps.h"
 #include "capture.h"
 #include "shell.h"
+#include "logview.h"
+#include "toast.h"
 #include "userconf.h"
 #include "toolbar.h"
 #include "util/log.h"
@@ -246,13 +248,14 @@ sc_screen_update_content_rect(struct sc_screen *screen) {
     // Reserve the toolbar gutter and (when open) the terminal panel on the
     // right, so the video is fit to their left.
     unsigned reserve = sc_toolbar_width() + sc_shell_reserved_width(screen)
-                     + sc_apps_reserved_width(screen);
+                     + sc_apps_reserved_width(screen)
+                     + sc_logview_reserved_width(screen);
     if (window_size.width > reserve) {
         window_size.width -= reserve;
     }
     compute_content_rect(window_size, screen->content_size, is_icon,
                          screen->render_fit, &screen->rect);
-    if (sc_shell_is_open() || sc_apps_is_open()) {
+    if (sc_shell_is_open() || sc_apps_is_open() || sc_logview_is_open()) {
         // A drawer is open: pin the video to the toolbar so the drawer can fill
         // all the remaining width to its right (it grows when the window does).
         screen->rect.x = sc_toolbar_width();
@@ -271,7 +274,7 @@ sc_screen_render(struct sc_screen *screen, bool update_content_rect) {
     assert(screen->window_shown);
 
     // Advance the shell drawer slide; recompute the content rect while it moves.
-    if (sc_shell_step_anim()) {
+    if (sc_shell_step_anim() || sc_logview_step_anim()) {
         update_content_rect = true;
     }
 
@@ -345,6 +348,8 @@ end:
     sc_toolbar_render(screen);
     sc_shell_render(screen);
     sc_apps_render(screen);
+    sc_logview_render(screen);
+    sc_toast_render(screen);
     sc_sdl_render_present(renderer);
 }
 
@@ -1188,6 +1193,10 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
     if (sc_apps_handle_event(screen, event)) {
         return;
     }
+    // The log drawer captures scroll/clicks within it while open.
+    if (sc_logview_handle_event(screen, event)) {
+        return;
+    }
 
     switch (event->type) {
         case SC_EVENT_OPEN_WINDOW:
@@ -1210,6 +1219,12 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
         case SC_EVENT_SHELL_UPDATE:
             // Shell output/input arrived on another thread: repaint so the
             // terminal stays live even when the mirror is static.
+            sc_screen_render(screen, false);
+            return;
+        case SC_EVENT_TOAST:
+            // A background op (install/push) reported a result: show/refresh the
+            // bottom-screen message and repaint.
+            sc_toast_accept(event->user.data1);
             sc_screen_render(screen, false);
             return;
         case SDL_EVENT_WINDOW_EXPOSED:
@@ -1272,7 +1287,8 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
     // would otherwise only repaint on the next video frame).
     if (event->type == SDL_EVENT_MOUSE_MOTION) {
         bool over_toolbar = event->motion.x < sc_toolbar_width();
-        bool over_drawer = (sc_shell_is_open() || sc_apps_is_open())
+        bool over_drawer = (sc_shell_is_open() || sc_apps_is_open()
+                            || sc_logview_is_open())
                         && event->motion.x >= screen->rect.x + screen->rect.w;
         if (over_toolbar || over_drawer) {
             sc_screen_render(screen, false);
