@@ -27,6 +27,7 @@
 #include "mouse_sdk.h"
 #include "recorder.h"
 #include "screen.h"
+#include "settings.h"
 #include "shell.h"
 #include "toolbar.h"
 #include "sdl_hints.h"
@@ -779,6 +780,8 @@ aoa_complete:
         sc_capture_init(serial);
         // Apps + density drawer targets this device.
         sc_apps_init(serial);
+        // Settings drawer (config editor).
+        sc_settings_init();
 
         if (options->video_playback) {
             struct sc_frame_source *src = &s->video_decoder.frame_source;

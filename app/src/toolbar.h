@@ -23,6 +23,17 @@ sc_toolbar_trigger(struct sc_screen *screen, int shortcut);
 int
 sc_toolbar_width(void);
 
+// Enumerate every known toolbar button (the full set, not the visible subset),
+// so the Settings drawer can present visibility checkboxes.
+int
+sc_toolbar_all_count(void);
+
+const char *
+sc_toolbar_all_name(int i);
+
+const char *
+sc_toolbar_all_label(int i);
+
 // Render the always-visible on-screen button toolbar over the mirror.
 // Called at the end of the screen render, before presenting.
 void

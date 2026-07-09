@@ -8,6 +8,7 @@
 #include "events.h"
 #include "font8x16_basic.h"
 #include "screen.h"
+#include "settings.h"
 #include "shell.h"
 
 #define SC_LV_LINES 4000 // scrollback ring size
@@ -120,6 +121,9 @@ sc_logview_toggle(struct sc_screen *screen) {
         }
         if (sc_apps_is_open()) {
             sc_apps_close(screen);
+        }
+        if (sc_settings_is_open()) {
+            sc_settings_close(screen);
         }
     }
     lv.open = !lv.open;

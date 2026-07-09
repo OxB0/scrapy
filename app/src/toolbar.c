@@ -17,6 +17,7 @@
 #include "nanosvg/nanosvg.h"
 #include "nanosvg/nanosvgrast.h"
 #include "screen.h"
+#include "settings.h"
 #include "shell.h"
 #include "util/log.h"
 
@@ -28,7 +29,7 @@
 enum sc_tb_icon {
     IC_BACK, IC_HOME, IC_RECENTS, IC_MENU, IC_NOTIF,
     IC_VOLUP, IC_VOLDN, IC_ROTATE, IC_POWER, IC_PIN, IC_SHELL,
-    IC_SHOT, IC_REC, IC_APPS, IC_AWAKE, IC_LOG,
+    IC_SHOT, IC_REC, IC_APPS, IC_AWAKE, IC_LOG, IC_SETTINGS,
     IC_COUNT,
 };
 
@@ -44,6 +45,7 @@ enum sc_tb_action {
     SC_TB_APPS,         // toggle the apps/density drawer
     SC_TB_AWAKE,        // toggle keep-screen-awake
     SC_TB_LOG,          // toggle the log drawer
+    SC_TB_SETTINGS,     // toggle the settings drawer
 };
 
 struct sc_tb_button {
@@ -64,6 +66,7 @@ static const struct sc_tb_button sc_toolbar_all[] = {
     {IC_SHELL,   SC_TB_SHELL,       0,          "Shell",       "shell", SC_SHORTCUT_SHELL},
     {IC_APPS,    SC_TB_APPS,        0,      "Apps & density",  "apps",  SC_SHORTCUT_APPS},
     {IC_LOG,     SC_TB_LOG,         0,          "Log",         "log",   SC_SHORTCUT_LOG},
+    {IC_SETTINGS,SC_TB_SETTINGS,    0,          "Settings",    "settings", SC_SHORTCUT_SETTINGS},
     {IC_SHOT,    SC_TB_SHOT,        0,          "Screenshot",  "screenshot", SC_SHORTCUT_SCREENSHOT},
     {IC_REC,     SC_TB_REC,         0,          "Record",      "record", SC_SHORTCUT_RECORD},
     {IC_BACK,    SC_TB_BACK_SCREEN, 0,          "Back",        "back",  SC_SHORTCUT_BACK},
@@ -153,6 +156,27 @@ sc_toolbar_width(void) {
         return 0; // no buttons configured: no gutter
     }
     return SC_TB_BTN + 2 * SC_TB_PAD;
+}
+
+int
+sc_toolbar_all_count(void) {
+    return (int) SC_TB_ALL;
+}
+
+const char *
+sc_toolbar_all_name(int i) {
+    if (i < 0 || i >= (int) SC_TB_ALL) {
+        return "";
+    }
+    return sc_toolbar_all[i].name;
+}
+
+const char *
+sc_toolbar_all_label(int i) {
+    if (i < 0 || i >= (int) SC_TB_ALL) {
+        return "";
+    }
+    return sc_toolbar_all[i].label;
 }
 
 // Button size shrinks from SC_TB_BTN so all buttons fit the window height (the
@@ -324,6 +348,8 @@ sc_toolbar_render(struct sc_screen *screen) {
                    || (sc_toolbar[i].action == SC_TB_SHELL && sc_shell_is_open())
                    || (sc_toolbar[i].action == SC_TB_APPS && sc_apps_is_open())
                    || (sc_toolbar[i].action == SC_TB_LOG && sc_logview_is_open())
+                   || (sc_toolbar[i].action == SC_TB_SETTINGS
+                       && sc_settings_is_open())
                    || (sc_toolbar[i].action == SC_TB_AWAKE
                        && sc_capture_awake_is_on())
                    || recording;
@@ -474,6 +500,9 @@ sc_toolbar_do(struct sc_screen *screen, const struct sc_tb_button *btn) {
             break;
         case SC_TB_LOG:
             sc_logview_toggle(screen);
+            break;
+        case SC_TB_SETTINGS:
+            sc_settings_toggle(screen);
             break;
     }
 }

@@ -11,6 +11,7 @@ enum sc_shortcut {
     SC_SHORTCUT_SHELL,
     SC_SHORTCUT_APPS,
     SC_SHORTCUT_LOG,
+    SC_SHORTCUT_SETTINGS,
     SC_SHORTCUT_SCREENSHOT,
     SC_SHORTCUT_RECORD,
     SC_SHORTCUT_AWAKE,
@@ -53,6 +54,11 @@ extern struct sc_config sc_conf;
 // Load the config (idempotent). Writes a default template if none exists.
 void
 sc_config_load(void);
+
+// Write the current sc_conf values back to the config file (used by the
+// Settings drawer's Save button). Returns true on success.
+bool
+sc_config_save(void);
 
 // Format shortcut `idx` (an sc_shortcut) as e.g. "Alt+Shift+T" into `buf`
 // (empty string if unbound).

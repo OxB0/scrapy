@@ -12,6 +12,7 @@
 #include "events.h"
 #include "options.h"
 #include "picker.h"
+#include "restart.h"
 #include "scrcpy.h"
 #ifdef HAVE_USB
 # include "usb/scrcpy_otg.h"
@@ -121,9 +122,11 @@ main_scrcpy(int argc, char *argv[]) {
         ret = scrcpy(&args.opts);
 #endif
 
-        // On disconnect in picker mode, re-exec the whole process so adb
-        // state (transport ids, server handle, etc.) starts completely clean.
-        if (picker_mode && ret != SCRCPY_EXIT_SUCCESS) {
+        // Re-exec the whole process when:
+        //  - a disconnect happened in picker mode (clean adb state on reconnect);
+        //  - the Settings drawer requested a restart to apply saved config.
+        if (sc_restart_pending()
+                || (picker_mode && ret != SCRCPY_EXIT_SUCCESS)) {
             sc_main_thread_destroy();
             net_cleanup();
 

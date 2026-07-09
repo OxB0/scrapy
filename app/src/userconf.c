@@ -72,6 +72,8 @@ set_default_shortcuts(void) {
     sc_conf.shortcuts[SC_SHORTCUT_SHELL].key = SDLK_T;
     sc_conf.shortcuts[SC_SHORTCUT_LOG].mod = as;
     sc_conf.shortcuts[SC_SHORTCUT_LOG].key = SDLK_L;
+    sc_conf.shortcuts[SC_SHORTCUT_SETTINGS].mod = as;
+    sc_conf.shortcuts[SC_SHORTCUT_SETTINGS].key = SDLK_G;
     sc_conf.shortcuts[SC_SHORTCUT_SCREENSHOT].mod = as;
     sc_conf.shortcuts[SC_SHORTCUT_SCREENSHOT].key = SDLK_S;
     sc_conf.shortcuts[SC_SHORTCUT_RECORD].mod = as;
@@ -142,6 +144,7 @@ shortcut_index(const char *name) {
     if (!strcmp(name, "shell")) return SC_SHORTCUT_SHELL;
     if (!strcmp(name, "apps")) return SC_SHORTCUT_APPS;
     if (!strcmp(name, "log")) return SC_SHORTCUT_LOG;
+    if (!strcmp(name, "settings")) return SC_SHORTCUT_SETTINGS;
     if (!strcmp(name, "screenshot")) return SC_SHORTCUT_SCREENSHOT;
     if (!strcmp(name, "record")) return SC_SHORTCUT_RECORD;
     if (!strcmp(name, "awake")) return SC_SHORTCUT_AWAKE;
@@ -170,9 +173,9 @@ static const char *DEFAULT_TEMPLATE =
     "\n"
     "# Which buttons to show, comma-separated, in the order given.\n"
     "# Use \"none\" for no toolbar at all.\n"
-    "# Names: pin, awake, shell, apps, log, screenshot, record, back, home,\n"
-    "#        recents, menu, notifications, volup, voldown, rotate, power\n"
-    "# buttons = pin,awake,shell,apps,log,screenshot,record,back,home,recents,menu,notifications,volup,voldown,rotate,power\n"
+    "# Names: pin, awake, shell, apps, log, settings, screenshot, record, back,\n"
+    "#        home, recents, menu, notifications, volup, voldown, rotate, power\n"
+    "# buttons = pin,awake,shell,apps,log,settings,screenshot,record,back,home,recents,menu,notifications,volup,voldown,rotate,power\n"
     "\n"
     "# Start with the window pinned always-on-top.\n"
     "# pin_on_top = false\n"
@@ -218,6 +221,7 @@ static const char *DEFAULT_TEMPLATE =
     "# key_shell = alt+shift+t\n"
     "# key_apps = alt+a\n"
     "# key_log = alt+shift+l\n"
+    "# key_settings = alt+shift+g\n"
     "# key_screenshot = alt+shift+s\n"
     "# key_record = alt+shift+r\n"
     "# key_awake = alt+shift+k\n"
@@ -364,4 +368,128 @@ sc_config_load(void) {
         }
     }
     fclose(f);
+}
+
+// Reverse of shortcut_index(): config token for a shortcut slot, or NULL.
+static const char *
+shortcut_name(int idx) {
+    switch (idx) {
+        case SC_SHORTCUT_SHELL: return "shell";
+        case SC_SHORTCUT_APPS: return "apps";
+        case SC_SHORTCUT_LOG: return "log";
+        case SC_SHORTCUT_SETTINGS: return "settings";
+        case SC_SHORTCUT_SCREENSHOT: return "screenshot";
+        case SC_SHORTCUT_RECORD: return "record";
+        case SC_SHORTCUT_AWAKE: return "awake";
+        case SC_SHORTCUT_PIN: return "pin";
+        case SC_SHORTCUT_BACK: return "back";
+        case SC_SHORTCUT_HOME: return "home";
+        case SC_SHORTCUT_RECENTS: return "recents";
+        case SC_SHORTCUT_MENU: return "menu";
+        case SC_SHORTCUT_NOTIF: return "notifications";
+        case SC_SHORTCUT_VOLUP: return "volup";
+        case SC_SHORTCUT_VOLDOWN: return "voldown";
+        case SC_SHORTCUT_ROTATE: return "rotate";
+        case SC_SHORTCUT_POWER: return "power";
+        default: return NULL;
+    }
+}
+
+// Serialize a shortcut to config form, e.g. "alt+shift+t" or "none".
+static void
+combo_to_conf(int idx, char *buf, size_t n) {
+    int k = sc_conf.shortcuts[idx].key;
+    if (!k) {
+        snprintf(buf, n, "none");
+        return;
+    }
+    unsigned m = sc_conf.shortcuts[idx].mod;
+    char key[16];
+    switch (k) {
+        case SDLK_UP: snprintf(key, sizeof(key), "up"); break;
+        case SDLK_DOWN: snprintf(key, sizeof(key), "down"); break;
+        case SDLK_LEFT: snprintf(key, sizeof(key), "left"); break;
+        case SDLK_RIGHT: snprintf(key, sizeof(key), "right"); break;
+        case SDLK_SPACE: snprintf(key, sizeof(key), "space"); break;
+        default:
+            if (k >= 32 && k < 127) {
+                key[0] = (char) tolower(k);
+                key[1] = '\0';
+            } else {
+                snprintf(key, sizeof(key), "?");
+            }
+    }
+    snprintf(buf, n, "%s%s%s%s%s",
+             (m & SDL_KMOD_CTRL) ? "ctrl+" : "",
+             (m & SDL_KMOD_ALT) ? "alt+" : "",
+             (m & SDL_KMOD_SHIFT) ? "shift+" : "",
+             (m & SDL_KMOD_GUI) ? "super+" : "", key);
+}
+
+bool
+sc_config_save(void) {
+    char path[1024];
+    config_path(path, sizeof(path));
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        return false;
+    }
+
+    fputs("# scrapy configuration (saved from the Settings drawer).\n", f);
+    fputs("# You can also edit values here directly, then relaunch.\n\n", f);
+
+    fputs("# ----- Toolbar -----\n", f);
+    if (sc_conf.has_buttons) {
+        fprintf(f, "buttons = %s\n", sc_conf.buttons);
+    }
+    fprintf(f, "pin_on_top = %s\n\n", sc_conf.pin_on_top ? "true" : "false");
+
+    fputs("# ----- Drawers -----\n", f);
+    if (sc_conf.shell_width > 0) {
+        fprintf(f, "shell_width = %d\n", sc_conf.shell_width);
+    }
+    if (sc_conf.apps_width > 0) {
+        fprintf(f, "apps_width = %d\n", sc_conf.apps_width);
+    }
+    if (sc_conf.log_width > 0) {
+        fprintf(f, "log_width = %d\n", sc_conf.log_width);
+    }
+    if (sc_conf.terminal_text_size > 0) {
+        fprintf(f, "terminal_text_size = %g\n", sc_conf.terminal_text_size);
+    }
+    fputc('\n', f);
+
+    fputs("# ----- Captures / device -----\n", f);
+    if (sc_conf.capture_dir[0]) {
+        fprintf(f, "capture_dir = %s\n", sc_conf.capture_dir);
+    }
+    if (sc_conf.default_density > 0) {
+        fprintf(f, "default_density = %d\n", sc_conf.default_density);
+    }
+    fputc('\n', f);
+
+    fputs("# ----- Notifications -----\n", f);
+    fprintf(f, "notifications = %s\n", sc_conf.notifications ? "true" : "false");
+    if (sc_conf.notification_time > 0) {
+        fprintf(f, "notification_time = %g\n", sc_conf.notification_time);
+    }
+    if (sc_conf.notification_text_size > 0) {
+        fprintf(f, "notification_text_size = %g\n",
+                sc_conf.notification_text_size);
+    }
+    fputc('\n', f);
+
+    fputs("# ----- Shortcuts -----\n", f);
+    for (int i = 0; i < SC_SHORTCUT_COUNT; ++i) {
+        const char *nm = shortcut_name(i);
+        if (!nm) {
+            continue;
+        }
+        char combo[64];
+        combo_to_conf(i, combo, sizeof(combo));
+        fprintf(f, "key_%s = %s\n", nm, combo);
+    }
+
+    fclose(f);
+    return true;
 }

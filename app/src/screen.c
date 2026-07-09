@@ -11,6 +11,7 @@
 #include "capture.h"
 #include "shell.h"
 #include "logview.h"
+#include "settings.h"
 #include "toast.h"
 #include "userconf.h"
 #include "toolbar.h"
@@ -249,13 +250,15 @@ sc_screen_update_content_rect(struct sc_screen *screen) {
     // right, so the video is fit to their left.
     unsigned reserve = sc_toolbar_width() + sc_shell_reserved_width(screen)
                      + sc_apps_reserved_width(screen)
-                     + sc_logview_reserved_width(screen);
+                     + sc_logview_reserved_width(screen)
+                     + sc_settings_reserved_width(screen);
     if (window_size.width > reserve) {
         window_size.width -= reserve;
     }
     compute_content_rect(window_size, screen->content_size, is_icon,
                          screen->render_fit, &screen->rect);
-    if (sc_shell_is_open() || sc_apps_is_open() || sc_logview_is_open()) {
+    if (sc_shell_is_open() || sc_apps_is_open() || sc_logview_is_open()
+            || sc_settings_is_open()) {
         // A drawer is open: pin the video to the toolbar so the drawer can fill
         // all the remaining width to its right (it grows when the window does).
         screen->rect.x = sc_toolbar_width();
@@ -274,7 +277,8 @@ sc_screen_render(struct sc_screen *screen, bool update_content_rect) {
     assert(screen->window_shown);
 
     // Advance the shell drawer slide; recompute the content rect while it moves.
-    if (sc_shell_step_anim() || sc_logview_step_anim()) {
+    if (sc_shell_step_anim() || sc_logview_step_anim()
+            || sc_settings_step_anim()) {
         update_content_rect = true;
     }
 
@@ -349,6 +353,7 @@ end:
     sc_shell_render(screen);
     sc_apps_render(screen);
     sc_logview_render(screen);
+    sc_settings_render(screen);
     sc_toast_render(screen);
     sc_sdl_render_present(renderer);
 }
@@ -1197,6 +1202,10 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
     if (sc_logview_handle_event(screen, event)) {
         return;
     }
+    // The settings drawer captures typing/clicks within it while open.
+    if (sc_settings_handle_event(screen, event)) {
+        return;
+    }
 
     switch (event->type) {
         case SC_EVENT_OPEN_WINDOW:
@@ -1288,7 +1297,7 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
     if (event->type == SDL_EVENT_MOUSE_MOTION) {
         bool over_toolbar = event->motion.x < sc_toolbar_width();
         bool over_drawer = (sc_shell_is_open() || sc_apps_is_open()
-                            || sc_logview_is_open())
+                            || sc_logview_is_open() || sc_settings_is_open())
                         && event->motion.x >= screen->rect.x + screen->rect.w;
         if (over_toolbar || over_drawer) {
             sc_screen_render(screen, false);

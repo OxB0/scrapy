@@ -41,6 +41,8 @@ src = [
     'src/shell.c',
     'src/logview.c',
     'src/nanosvg_impl.c',
+    'src/restart.c',
+    'src/settings.c',
     'src/toast.c',
     'src/toolbar.c',
     'src/texture.c',

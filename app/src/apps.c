@@ -16,6 +16,7 @@
 #include "font8x8_basic.h"
 #include "logview.h"
 #include "screen.h"
+#include "settings.h"
 #include "shell.h"
 #include "util/log.h"
 #include "util/process.h"
@@ -340,6 +341,9 @@ sc_apps_toggle(struct sc_screen *screen) {
     }
     if (sc_logview_is_open()) {
         sc_logview_close(screen);
+    }
+    if (sc_settings_is_open()) {
+        sc_settings_close(screen);
     }
     g.open = true;
     g.scroll = 0;

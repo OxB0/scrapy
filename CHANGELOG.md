@@ -3,6 +3,18 @@
 All notable changes to **scrapy** (a scrcpy fork with a built-in toolbar,
 terminal, and drawers) are documented here. Based on scrcpy 4.0.
 
+## [Unreleased]
+
+### Added
+- **Settings drawer** — a new toolbar button (gear icon, `Alt+Shift+G`) opens a
+  tabbed settings panel:
+  - **Buttons** — check/uncheck which toolbar buttons appear.
+  - **Shell** — terminal drawer width and text size.
+  - **Misc** — notifications on/off, notification time & size, pin-on-top,
+    apps/log drawer widths, default density, and capture folder.
+  Pressing **Save** writes `scrapy.conf` and relaunches the app so the changes
+  take effect. Removable via the `buttons` config line like any other button.
+
 ## [1.2] — 2026-07-08
 
 ### Added — Terminal
