@@ -212,6 +212,166 @@ do_screencap(const char *path) {
 }
 #endif
 
+// --- copy screenshot to the clipboard ---
+
+#ifdef _WIN32
+// Run `adb exec-out screencap` (raw), reading all of stdout into a heap buffer.
+static bool
+capture_raw_win(unsigned char **out_buf, size_t *out_len) {
+    const char *adb = capture_adb();
+    if (!adb) {
+        return false;
+    }
+    char cmd[1024];
+    if (g_serial[0]) {
+        snprintf(cmd, sizeof(cmd), "\"%s\" -s %s exec-out screencap", adb,
+                 g_serial);
+    } else {
+        snprintf(cmd, sizeof(cmd), "\"%s\" exec-out screencap", adb);
+    }
+    SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
+    HANDLE rd = NULL, wr = NULL;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) {
+        return false;
+    }
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+    HANDLE nul = CreateFileA("NUL", GENERIC_READ | GENERIC_WRITE,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                             OPEN_EXISTING, 0, NULL);
+    STARTUPINFOA si;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = nul;
+    si.hStdOutput = wr;
+    si.hStdError = nul;
+    PROCESS_INFORMATION pi;
+    BOOL ok = CreateProcessA(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW,
+                             NULL, NULL, &si, &pi);
+    CloseHandle(wr);
+    if (nul != INVALID_HANDLE_VALUE) {
+        CloseHandle(nul);
+    }
+    if (!ok) {
+        CloseHandle(rd);
+        return false;
+    }
+    size_t cap = 1u << 20, len = 0;
+    unsigned char *buf = malloc(cap);
+    while (buf) {
+        if (len + 65536 > cap) {
+            size_t ncap = cap * 2;
+            unsigned char *nb = realloc(buf, ncap);
+            if (!nb) {
+                free(buf);
+                buf = NULL;
+                break;
+            }
+            buf = nb;
+            cap = ncap;
+        }
+        DWORD rn = 0;
+        if (!ReadFile(rd, buf + len, 65536, &rn, NULL) || rn == 0) {
+            break;
+        }
+        len += rn;
+    }
+    CloseHandle(rd);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    if (!buf) {
+        return false;
+    }
+    *out_buf = buf;
+    *out_len = len;
+    return len > 12;
+}
+
+// Put the current device screen on the Windows clipboard as a DIB.
+static bool
+screenshot_to_clipboard(const char *path) {
+    (void) path;
+    unsigned char *buf = NULL;
+    size_t len = 0;
+    if (!capture_raw_win(&buf, &len)) {
+        return false;
+    }
+    // screencap raw header: width, height, format (LE uint32 each), maybe a 4th
+    // word on newer Android — recover the header size from the total length.
+    uint32_t w = buf[0] | (buf[1] << 8) | (buf[2] << 16) | ((uint32_t) buf[3] << 24);
+    uint32_t h = buf[4] | (buf[5] << 8) | (buf[6] << 16) | ((uint32_t) buf[7] << 24);
+    size_t px = (size_t) w * h * 4;
+    bool done = false;
+    if (w && h && len > px && (len - px) >= 8 && (len - px) <= 64) {
+        const unsigned char *rgba = buf + (len - px); // skip the header
+        BITMAPINFOHEADER bih;
+        memset(&bih, 0, sizeof(bih));
+        bih.biSize = sizeof(bih);
+        bih.biWidth = (LONG) w;
+        bih.biHeight = (LONG) h; // positive: bottom-up DIB (most compatible)
+        bih.biPlanes = 1;
+        bih.biBitCount = 32;
+        bih.biCompression = BI_RGB;
+        bih.biSizeImage = (DWORD) px;
+        HGLOBAL gmem = GlobalAlloc(GMEM_MOVEABLE, sizeof(bih) + px);
+        if (gmem) {
+            unsigned char *p = GlobalLock(gmem);
+            memcpy(p, &bih, sizeof(bih));
+            unsigned char *dst = p + sizeof(bih);
+            for (uint32_t y = 0; y < h; ++y) {
+                const unsigned char *sr = rgba + (size_t) (h - 1 - y) * w * 4;
+                unsigned char *dr = dst + (size_t) y * w * 4;
+                for (uint32_t x = 0; x < w; ++x) {
+                    dr[x * 4 + 0] = sr[x * 4 + 2]; // B
+                    dr[x * 4 + 1] = sr[x * 4 + 1]; // G
+                    dr[x * 4 + 2] = sr[x * 4 + 0]; // R
+                    dr[x * 4 + 3] = sr[x * 4 + 3] ? sr[x * 4 + 3] : 255;
+                }
+            }
+            GlobalUnlock(gmem);
+            if (OpenClipboard(NULL)) {
+                EmptyClipboard();
+                if (SetClipboardData(CF_DIB, gmem)) {
+                    done = true;
+                    gmem = NULL; // clipboard owns it now
+                }
+                CloseClipboard();
+            }
+            if (gmem) {
+                GlobalFree(gmem);
+            }
+        }
+    }
+    free(buf);
+    return done;
+}
+#else
+// Best effort on Linux: pipe the saved PNG to wl-copy (Wayland) or xclip (X11).
+static bool
+screenshot_to_clipboard(const char *path) {
+    char cmd[1200];
+    snprintf(cmd, sizeof(cmd),
+             "command -v wl-copy >/dev/null 2>&1 && wl-copy --type image/png < '%s'",
+             path);
+    const char *wl[] = {"sh", "-c", cmd, NULL};
+    sc_pid pid;
+    if (sc_process_execute_p(wl, &pid, 0, NULL, NULL, NULL) == SC_PROCESS_SUCCESS
+            && sc_process_wait(pid, true) == 0) {
+        return true;
+    }
+    snprintf(cmd, sizeof(cmd),
+             "command -v xclip >/dev/null 2>&1 && "
+             "xclip -selection clipboard -t image/png -i '%s'", path);
+    const char *xc[] = {"sh", "-c", cmd, NULL};
+    if (sc_process_execute_p(xc, &pid, 0, NULL, NULL, NULL) == SC_PROCESS_SUCCESS
+            && sc_process_wait(pid, true) == 0) {
+        return true;
+    }
+    return false;
+}
+#endif
+
 static int
 shot_thread(void *userdata) {
     (void) userdata;
@@ -222,8 +382,13 @@ shot_thread(void *userdata) {
     char path[600];
     home_path(path, sizeof(path), name);
     bool ok = do_screencap(path);
-    set_toast(ok ? "Screenshot saved to home folder" : "Screenshot failed",
-              !ok);
+    bool clip = ok && screenshot_to_clipboard(path);
+    if (ok) {
+        set_toast(clip ? "Screenshot saved + copied to clipboard"
+                       : "Screenshot saved to home folder", false);
+    } else {
+        set_toast("Screenshot failed", true);
+    }
     return 0;
 }
 
