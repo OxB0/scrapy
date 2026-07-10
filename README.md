@@ -2,6 +2,7 @@
 
 <p align="center"><i>scrcpy, with the toolbar, terminal, and multi-device handling it always needed.</i></p>
 
+
 <p align="center">
   <img src="doc/scrapy-shell.png" alt="Labelled toolbar" height="300">
   &nbsp;&nbsp;
@@ -39,6 +40,12 @@ Grab a build from the [releases page](https://github.com/OxB0/scrapy/releases):
 
 - **Windows x64** — unzip and run `scrapy.exe`.
 - **Linux x64** — extract and run `./scrapy`. Needs a desktop with X11 or Wayland and glibc 2.38 or newer (Ubuntu 23.10+, Fedora 39+, Arch, etc.).
+
+Linux one-liner (downloads the latest release into a `scrapy/` folder):
+
+```sh
+curl -L https://github.com/OxB0/scrapy/releases/latest/download/scrapy-linux-x64.tar.gz -O && mkdir -p scrapy && tar -xvf scrapy-linux-x64.tar.gz -C scrapy && rm scrapy-linux-x64.tar.gz
+```
 
 A `scrapy.conf` is created next to the program on first run — edit it to change the buttons, drawer sizes, capture folder, shortcuts, and more.
 
