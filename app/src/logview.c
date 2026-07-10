@@ -159,7 +159,7 @@ sc_logview_step_anim(void) {
 int
 sc_logview_reserved_width(struct sc_screen *screen) {
     (void) screen;
-    return lv.open ? SC_LV_MIN : 0;
+    return lv.open ? lv_target() : 0; // fixed-width panel
 }
 
 // --- rendering (own 8x16 font atlas, mirroring the shell drawer) ---
@@ -227,7 +227,7 @@ sc_logview_render(struct sc_screen *screen) {
     int w, h;
     SDL_GetWindowSize(screen->window, &w, &h);
 
-    float x0 = screen->rect.x + screen->rect.w;
+    float x0 = sc_screen_drawer_left(screen);
     float pw = (float) w - x0;
     if (pw < 1) {
         return;
@@ -349,7 +349,7 @@ sc_logview_handle_event(struct sc_screen *screen, const SDL_Event *event) {
     if (!lv.open) {
         return false;
     }
-    float x0 = screen->rect.x + screen->rect.w; // drawer left edge
+    float x0 = sc_screen_drawer_left(screen); // drawer left edge
     switch (event->type) {
         case SDL_EVENT_MOUSE_WHEEL: {
             float mx, my;

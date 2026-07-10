@@ -150,6 +150,10 @@ struct sc_screen_params {
 bool
 sc_screen_init(struct sc_screen *screen, const struct sc_screen_params *params);
 
+// Logical x where the right-side drawer panel begins (a fixed-width panel).
+int
+sc_screen_drawer_left(struct sc_screen *screen);
+
 // request to interrupt any inner thread
 // must be called before sc_screen_join()
 void

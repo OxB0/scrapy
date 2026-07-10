@@ -257,15 +257,23 @@ sc_screen_update_content_rect(struct sc_screen *screen) {
     }
     compute_content_rect(window_size, screen->content_size, is_icon,
                          screen->render_fit, &screen->rect);
-    if (sc_shell_is_open() || sc_apps_is_open() || sc_logview_is_open()
-            || sc_settings_is_open()) {
-        // A drawer is open: pin the video to the toolbar so the drawer can fill
-        // all the remaining width to its right (it grows when the window does).
-        screen->rect.x = sc_toolbar_width();
-    } else {
-        // The toolbar sits in a left gutter; shift the video past it.
-        screen->rect.x += sc_toolbar_width();
-    }
+    // The toolbar sits in a left gutter and (when open) a fixed-width drawer on
+    // the right. The video is centered in the region between them and
+    // letterboxed if its orientation does not match, so rotating never resizes
+    // the window or the drawer.
+    screen->rect.x += sc_toolbar_width();
+}
+
+// Logical x where the right-side drawer panel begins: the window width minus the
+// open drawer's fixed width. This does not depend on the video size/orientation.
+int
+sc_screen_drawer_left(struct sc_screen *screen) {
+    struct sc_size ws = sc_sdl_get_window_size(screen->window);
+    unsigned dw = sc_shell_reserved_width(screen)
+                + sc_apps_reserved_width(screen)
+                + sc_logview_reserved_width(screen)
+                + sc_settings_reserved_width(screen);
+    return ws.width > dw ? (int) (ws.width - dw) : 0;
 }
 
 // render the texture to the renderer
@@ -876,12 +884,42 @@ sc_screen_destroy(struct sc_screen *screen) {
     }
 }
 
+// True when a right-side drawer (terminal/apps/log/settings) is open. While one
+// is, the window is sized for video + drawer and the aspect ratio is unlocked.
+static bool
+screen_drawer_open(void) {
+    return sc_shell_is_open() || sc_apps_is_open() || sc_logview_is_open()
+        || sc_settings_is_open();
+}
+
 static void
 resize_for_content(struct sc_screen *screen, struct sc_size old_content_size,
                    struct sc_size new_content_size) {
     assert(screen->video);
 
     unsigned tb = sc_toolbar_width();
+
+    if (screen_drawer_open()) {
+        // A fixed-width drawer is on the right and the aspect ratio is unlocked.
+        // Resize the window so the video fills its new-orientation natural size
+        // again (no black bars), keeping the drawer's width and NOT re-locking
+        // the aspect ratio (which would corrupt the video+drawer layout).
+        struct sc_size win = sc_sdl_get_window_size(screen->window);
+        unsigned dw = sc_shell_reserved_width(screen)
+                    + sc_apps_reserved_width(screen)
+                    + sc_logview_reserved_width(screen)
+                    + sc_settings_reserved_width(screen);
+        struct sc_size target = new_content_size;
+        unsigned vid_w = win.width > tb + dw ? win.width - tb - dw : win.width;
+        target.width = (uint32_t) vid_w * target.width / old_content_size.width;
+        target.height = (uint32_t) win.height * target.height
+                      / old_content_size.height;
+        target = get_optimal_size(target, new_content_size, true);
+        target.width += tb + dw;
+        sc_sdl_set_window_size(screen->window, target);
+        return;
+    }
+
     struct sc_size target_size = new_content_size;
     if (!screen->flex_display) {
         struct sc_size window_size = sc_sdl_get_window_size(screen->window);
@@ -1298,7 +1336,7 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
         bool over_toolbar = event->motion.x < sc_toolbar_width();
         bool over_drawer = (sc_shell_is_open() || sc_apps_is_open()
                             || sc_logview_is_open() || sc_settings_is_open())
-                        && event->motion.x >= screen->rect.x + screen->rect.w;
+                        && event->motion.x >= sc_screen_drawer_left(screen);
         if (over_toolbar || over_drawer) {
             sc_screen_render(screen, false);
         }

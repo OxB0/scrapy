@@ -488,9 +488,9 @@ sc_shell_step_anim(void) {
 int
 sc_shell_reserved_width(struct sc_screen *screen) {
     (void) screen;
-    // Reserve only a minimum for the video fit; the drawer actually renders from
-    // the video's right edge to the window edge, so it grows with the window.
-    return g.open ? SC_SH_MIN : 0;
+    // Fixed-width panel: reserve the full drawer width so the video is fit into
+    // a stable region and the panel never moves when the video re-fits/rotates.
+    return g.open ? sh_target() : 0;
 }
 
 // --- selection ---
@@ -672,7 +672,7 @@ sc_shell_render(struct sc_screen *screen) {
 
     // The drawer occupies everything to the right of the video, so it fills any
     // extra window width.
-    float x0 = screen->rect.x + screen->rect.w;
+    float x0 = sc_screen_drawer_left(screen);
     float pw = (float) w - x0;
     if (pw < 1) {
         return;
@@ -976,7 +976,7 @@ sc_shell_handle_event(struct sc_screen *screen, const SDL_Event *event) {
             // swallow TEXT_INPUT so nothing is typed twice or in another script.
             return true;
         case SDL_EVENT_MOUSE_BUTTON_DOWN: {
-            float x0 = screen->rect.x + screen->rect.w;
+            float x0 = sc_screen_drawer_left(screen);
             if (event->button.x < x0) return false;
             if (event->button.button == SDL_BUTTON_LEFT) {
                 sel_dragging = true;
@@ -1039,7 +1039,7 @@ sc_shell_handle_event(struct sc_screen *screen, const SDL_Event *event) {
         case SDL_EVENT_MOUSE_WHEEL: {
             float mx, my;
             SDL_GetMouseState(&mx, &my);
-            float x0 = screen->rect.x + screen->rect.w;
+            float x0 = sc_screen_drawer_left(screen);
             if (mx >= x0) {
                 g.scroll += (int) (event->wheel.y * 3);
                 if (g.scroll > rp_max_scroll) {
@@ -1057,7 +1057,7 @@ sc_shell_handle_event(struct sc_screen *screen, const SDL_Event *event) {
         case SDL_EVENT_DROP_TEXT: {
             // Text dragged from another app and dropped onto the drawer: paste
             // it into the shell (DROP_FILE is left to the mirror's file pusher).
-            float x0 = screen->rect.x + screen->rect.w;
+            float x0 = sc_screen_drawer_left(screen);
             if (event->drop.x >= x0 && event->drop.data) {
                 shell_write(event->drop.data, (int) strlen(event->drop.data));
                 g.scroll = 0;

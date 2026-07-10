@@ -335,14 +335,14 @@ sc_settings_step_anim(void) {
 int
 sc_settings_reserved_width(struct sc_screen *screen) {
     (void) screen;
-    return s.open ? SC_SET_MIN : 0;
+    return s.open ? SC_SET_W : 0; // fixed-width panel
 }
 
 // --- layout (logical coordinates) ---
 
 static float
 set_x0(struct sc_screen *screen) {
-    return screen->rect.x + screen->rect.w;
+    return sc_screen_drawer_left(screen);
 }
 
 static void

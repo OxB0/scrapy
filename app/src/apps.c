@@ -391,15 +391,14 @@ sc_apps_is_open(void) {
 int
 sc_apps_reserved_width(struct sc_screen *screen) {
     (void) screen;
-    // Only a minimum is reserved for the video fit; the drawer renders from the
-    // video's right edge to the window edge, growing with the window.
-    return g.open ? SC_APPS_MIN : 0;
+    // Fixed-width panel: reserve the full drawer width so the panel stays put.
+    return g.open ? apps_target() : 0;
 }
 
 // Left edge of the drawer, in logical px: the right edge of the video.
 static float
 apps_x0(struct sc_screen *screen) {
-    return screen->rect.x + screen->rect.w;
+    return sc_screen_drawer_left(screen);
 }
 
 // --- layout (logical coordinates) ---
