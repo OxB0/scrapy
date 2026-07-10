@@ -190,10 +190,22 @@ static const char *DEFAULT_TEMPLATE =
     "# Terminal font size multiplier (larger = bigger text).\n"
     "# terminal_text_size = 1.8\n"
     "\n"
+    "# Terminal scrollback size, in lines (200 - 50000).\n"
+    "# shell_scrollback = 5000\n"
+    "\n"
     "# ----- Captures ----------------------------------------------------------\n"
     "\n"
     "# Folder for screenshots and recordings (default: your home folder).\n"
     "# capture_dir = C:\\Users\\You\\Pictures\n"
+    "\n"
+    "# ----- Logging -----------------------------------------------------------\n"
+    "\n"
+    "# Save the terminal (shell) output to a file. Off by default.\n"
+    "# shell_log_to_file = false\n"
+    "\n"
+    "# Where to save it (default: scrapy-shell.log next to the app on Windows,\n"
+    "# ~/.scrapy-shell.log on Linux).\n"
+    "# shell_log_path = C:\\Users\\You\\shell.log\n"
     "\n"
     "# ----- Notifications -----------------------------------------------------\n"
     "\n"
@@ -333,6 +345,8 @@ sc_config_load(void) {
             sc_conf.shell_width = atoi(val);
         } else if (!strcmp(key, "apps_width")) {
             sc_conf.apps_width = atoi(val);
+        } else if (!strcmp(key, "shell_scrollback")) {
+            sc_conf.shell_scrollback = atoi(val);
         } else if (!strcmp(key, "log_width")) {
             sc_conf.log_width = atoi(val);
         } else if (!strcmp(key, "capture_dir")) {
@@ -344,6 +358,11 @@ sc_config_load(void) {
             sc_conf.default_density = atoi(val);
         } else if (!strcmp(key, "terminal_text_size")) {
             sc_conf.terminal_text_size = (float) atof(val);
+        } else if (!strcmp(key, "shell_log_to_file")) {
+            sc_conf.shell_log_to_file = is_true(val);
+        } else if (!strcmp(key, "shell_log_path")) {
+            snprintf(sc_conf.shell_log_path, sizeof(sc_conf.shell_log_path),
+                     "%s", val);
         } else if (!strcmp(key, "notifications")) {
             sc_conf.notifications = is_true(val);
         } else if (!strcmp(key, "notification_time")) {
@@ -457,6 +476,9 @@ sc_config_save(void) {
     if (sc_conf.terminal_text_size > 0) {
         fprintf(f, "terminal_text_size = %g\n", sc_conf.terminal_text_size);
     }
+    if (sc_conf.shell_scrollback > 0) {
+        fprintf(f, "shell_scrollback = %d\n", sc_conf.shell_scrollback);
+    }
     fputc('\n', f);
 
     fputs("# ----- Captures / device -----\n", f);
@@ -468,7 +490,12 @@ sc_config_save(void) {
     }
     fputc('\n', f);
 
-    fputs("# ----- Notifications -----\n", f);
+    fputs("# ----- Logging / notifications -----\n", f);
+    fprintf(f, "shell_log_to_file = %s\n",
+            sc_conf.shell_log_to_file ? "true" : "false");
+    if (sc_conf.shell_log_path[0]) {
+        fprintf(f, "shell_log_path = %s\n", sc_conf.shell_log_path);
+    }
     fprintf(f, "notifications = %s\n", sc_conf.notifications ? "true" : "false");
     if (sc_conf.notification_time > 0) {
         fprintf(f, "notification_time = %g\n", sc_conf.notification_time);

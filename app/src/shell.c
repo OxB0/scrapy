@@ -2,6 +2,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <SDL3/SDL.h>
 
@@ -24,11 +25,11 @@
 #include "util/process.h"
 #include "util/thread.h"
 
-#define SC_SH_LINES 600     // scrollback ring size
+#define SC_SH_DEF_LINES 5000 // default scrollback (lines); config can override
+#define SC_SH_MAX_LINES 50000 // hard cap, to bound memory
 #define SC_SH_COLS  512     // max stored chars per line
 #define SC_SH_INPUT 1024
 #define SC_SH_MIN    300    // minimum drawer width (video-fit reservation)
-#define SC_SH_MAXDR  400    // max wrapped display rows built per frame
 #define SC_SH_FONT_MUL 1.8f // font size: pixels per source pixel (at scale 1)
 
 // Width the window grows by when the drawer opens (config override, else 600).
@@ -60,8 +61,9 @@ struct sc_shell {
     bool thread_started;
 
     sc_mutex mutex; // protects the ring buffer + cur line
-    char lines[SC_SH_LINES][SC_SH_COLS];
-    int lens[SC_SH_LINES];
+    char (*lines)[SC_SH_COLS]; // ring buffer of up to `cap` lines
+    int *lens;
+    int cap;                   // scrollback capacity (lines)
     int head;  // index of oldest line
     int count; // number of stored lines
     char cur[SC_SH_COLS]; // the current (live) line from the PTY
@@ -70,10 +72,19 @@ struct sc_shell {
 
     int scroll; // scrollback offset in lines (0 = bottom)
 
-    int esc; // ANSI escape state: 0 none, 1 got ESC, 2 in CSI
+    int esc;       // ANSI escape state: 0 none, 1 got ESC, 2 in CSI
+    int esc_param; // accumulated numeric CSI parameter (for ESC[<n>J etc.)
 };
 
 static struct sc_shell g;
+
+// Display rows: the wrapped lines built for the current frame, promoted to file
+// scope so the copy path can read them. Allocated to g.cap in sc_shell_init.
+static char (*dr)[SC_SH_COLS];
+static int *dr_len;
+static int *dr_cursor;
+static int dr_cap;
+static int g_ndr;
 
 static void
 shdbg(const char *fmt, ...) {
@@ -100,21 +111,93 @@ sc_shell_init(const char *serial) {
     memset(&g, 0, sizeof(g));
     g.serial = serial;
     g.pid = SC_PROCESS_NONE;
+
+    // Scrollback capacity from config (clamped), shared by the ring buffer and
+    // the display-row buffers so you can scroll/copy the whole history.
+    int cap = sc_conf.shell_scrollback > 0 ? sc_conf.shell_scrollback
+                                           : SC_SH_DEF_LINES;
+    if (cap < 200) {
+        cap = 200;
+    }
+    if (cap > SC_SH_MAX_LINES) {
+        cap = SC_SH_MAX_LINES;
+    }
+    g.cap = cap;
+    g.lines = calloc((size_t) cap, sizeof(*g.lines));
+    g.lens = calloc((size_t) cap, sizeof(*g.lens));
+    dr = calloc((size_t) cap, sizeof(*dr));
+    dr_len = calloc((size_t) cap, sizeof(*dr_len));
+    dr_cursor = calloc((size_t) cap, sizeof(*dr_cursor));
+    dr_cap = cap;
+    if (!g.lines || !g.lens || !dr || !dr_len || !dr_cursor) {
+        LOGE("Shell: could not allocate scrollback buffers");
+        g.ready = false;
+        return;
+    }
     sc_mutex_init(&g.mutex);
     g.ready = true;
+}
+
+// --- optional shell-output log file ---
+
+static FILE *g_shell_log; // when config shell_log_to_file is on
+
+// The default shell-log location: next to the executable (Windows) or in the
+// home directory (Linux/macOS). Exposed so the Settings drawer can pre-fill it.
+void
+sc_shell_default_log_path(char *buf, size_t n) {
+#ifdef _WIN32
+    char exe[1024];
+    DWORD len = GetModuleFileNameA(NULL, exe, sizeof(exe));
+    char *slash = (len > 0 && len < sizeof(exe)) ? strrchr(exe, '\\') : NULL;
+    if (slash) {
+        *(slash + 1) = '\0';
+        snprintf(buf, n, "%sscrapy-shell.log", exe);
+    } else {
+        snprintf(buf, n, "scrapy-shell.log");
+    }
+#else
+    const char *home = getenv("HOME");
+    snprintf(buf, n, "%s/.scrapy-shell.log", home && *home ? home : ".");
+#endif
+}
+
+// Open the shell-output log (append), once, when the shell first starts.
+static void
+shell_log_open(void) {
+    if (!sc_conf.shell_log_to_file || g_shell_log) {
+        return;
+    }
+    char path[1024];
+    if (sc_conf.shell_log_path[0]) {
+        snprintf(path, sizeof(path), "%s", sc_conf.shell_log_path);
+    } else {
+        sc_shell_default_log_path(path, sizeof(path));
+    }
+    g_shell_log = fopen(path, "a");
+    if (g_shell_log) {
+        fputs("\n===== shell session =====\n", g_shell_log);
+        fflush(g_shell_log);
+    }
 }
 
 // --- ring buffer (call under mutex) ---
 
 static void
 push_cur(void) {
-    int slot = (g.head + g.count) % SC_SH_LINES;
+    int slot = (g.head + g.count) % g.cap;
     memcpy(g.lines[slot], g.cur, g.curlen);
     g.lens[slot] = g.curlen;
-    if (g.count < SC_SH_LINES) {
+    if (g_shell_log) {
+        // Save the finalized line (already cleaned of ANSI escapes / overwrites).
+        fwrite(g.cur, 1, (size_t) g.curlen, g_shell_log);
+        fputc('\n', g_shell_log);
+        fflush(g_shell_log);
+    }
+    if (g.count < g.cap) {
         g.count++;
     } else {
-        g.head = (g.head + 1) % SC_SH_LINES;
+        g.head = (g.head + 1) % g.cap;
     }
     g.curlen = 0;
     g.curcol = 0;
@@ -127,17 +210,33 @@ push_cur(void) {
 static void
 append_byte(char b) {
     if (g.esc == 1) {
-        g.esc = (b == '[') ? 2 : 0;
-        return;
-    }
-    if (g.esc == 2) {
-        if ((unsigned char) b >= 0x40 && (unsigned char) b <= 0x7e) {
-            if (b == 'K') {
-                g.curlen = g.curcol; // erase to end of line
-            }
+        if (b == '[') {
+            g.esc = 2;
+            g.esc_param = 0;
+        } else {
             g.esc = 0;
         }
         return;
+    }
+    if (g.esc == 2) {
+        if (b >= '0' && b <= '9') {
+            g.esc_param = g.esc_param * 10 + (b - '0'); // CSI parameter digit
+            return;
+        }
+        if ((unsigned char) b >= 0x40 && (unsigned char) b <= 0x7e) {
+            if (b == 'K') {
+                g.curlen = g.curcol; // erase to end of line
+            } else if (b == 'J' && (g.esc_param == 2 || g.esc_param == 3)) {
+                // Clear the screen / scrollback (`clear`, Ctrl+L, tput clear).
+                g.head = 0;
+                g.count = 0;
+                g.curlen = 0;
+                g.curcol = 0;
+                g.scroll = 0;
+            }
+            g.esc = 0;
+        }
+        return; // stay in CSI for other bytes (e.g. ';')
     }
     if (b == 0x1b) {
         g.esc = 1;
@@ -226,6 +325,8 @@ static void
 shell_start(void) {
     const char *adb = sc_adb_get_executable();
     bool spawned = false;
+
+    shell_log_open(); // begin saving shell output to a file if enabled
 
 #ifdef _WIN32
     // Spawn adb ourselves with CREATE_NO_WINDOW: adb's interactive shell needs
@@ -396,27 +497,27 @@ sc_shell_reserved_width(struct sc_screen *screen) {
 
 static bool sel_dragging; // mouse button held, extending selection
 static bool sel_present;  // a completed (or in-progress) selection exists
-static int sel_r1, sel_c1; // anchor point (row-from-bottom, column)
+// Selection endpoints in ABSOLUTE display-row index (0 = bottom row, increasing
+// upward), so they stay correct while the view auto-scrolls during a drag.
+static int sel_r1, sel_c1; // anchor point
 static int sel_r2, sel_c2; // moving point
+static float sel_drag_mx, sel_drag_my; // last drag mouse position (logical px)
+static SDL_TimerID sel_timer;          // repaint tick that drives auto-scroll
 
 // Render parameters saved for the event handler's coordinate mapping.
 static float rp_left, rp_px, rp_area_bot, rp_line_h, rp_x0, rp_scale;
-static int rp_cols, rp_out_rows, rp_scroll;
+static int rp_cols, rp_out_rows, rp_scroll, rp_max_scroll;
 
-// Display rows: promoted to file scope so copy can read them.
-static char dr[SC_SH_MAXDR][SC_SH_COLS];
-static int dr_len[SC_SH_MAXDR];
-static int dr_cursor[SC_SH_MAXDR];
-static int g_ndr;
-
+// Map a mouse position to an absolute display-row index + column.
 static void
-sel_mouse_to_cell(float mx, float my, int *out_row, int *out_col) {
+sel_mouse_to_cell(float mx, float my, int *out_di, int *out_col) {
     int col = (int) ((mx * rp_scale - rp_left) / (8 * rp_px));
     if (col < 0) col = 0;
     if (col > rp_cols) col = rp_cols;
-    int row = (int) ((rp_area_bot - my * rp_scale) / rp_line_h);
-    if (row < 0) row = 0;
-    *out_row = row;
+    int vrow = (int) ((rp_area_bot - my * rp_scale) / rp_line_h);
+    if (vrow < 0) vrow = 0;
+    if (vrow > rp_out_rows - 1) vrow = rp_out_rows - 1;
+    *out_di = rp_scroll + vrow; // absolute (independent of the current scroll)
     *out_col = col;
 }
 
@@ -438,11 +539,13 @@ sel_copy_to_clipboard(void) {
     int r1, c1, r2, c2;
     sel_order(&r1, &c1, &r2, &c2);
 
-    char buf[SC_SH_MAXDR * (SC_SH_COLS + 1)];
+    size_t bufsz = (size_t) dr_cap * (SC_SH_COLS + 1);
+    char *buf = malloc(bufsz); // heap: too large for the stack at this size
+    if (!buf) return;
     int pos = 0;
-    // Iterate from the top of the selection (higher row-from-bottom) downward.
+    // Iterate from the top of the selection (higher row index) downward.
     for (int r = r1; r >= r2; --r) {
-        int di = rp_scroll + r;
+        int di = r; // sel endpoints are already absolute display-row indices
         if (di < 0 || di >= g_ndr) continue;
         int start = (r == r1) ? c1 : 0;
         int end = (r == r2) ? c2 : dr_len[di];
@@ -451,13 +554,13 @@ sel_copy_to_clipboard(void) {
         if (start < 0) start = 0;
         if (end < start) end = start;
         for (int i = start; i < end; ++i) {
-            if (pos < (int) sizeof(buf) - 2) {
+            if (pos < (int) bufsz - 2) {
                 buf[pos++] = dr[di][i];
             }
         }
         // Trim trailing spaces from this row.
         while (pos > 0 && buf[pos - 1] == ' ') pos--;
-        if (r > r2 && pos < (int) sizeof(buf) - 2) {
+        if (r > r2 && pos < (int) bufsz - 2) {
             buf[pos++] = '\n';
         }
     }
@@ -465,6 +568,33 @@ sel_copy_to_clipboard(void) {
     if (pos > 0) {
         SDL_SetClipboardText(buf);
     }
+    free(buf);
+}
+
+// Select the whole buffer (Ctrl+A). Jump to the top so every row is built this
+// frame, then mark from the top row down to the bottom. The MAXDR/0 bounds are
+// clamped to the actually-built rows by sel_copy_to_clipboard and the renderer.
+static void
+sel_select_all(void) {
+    g.scroll = g.cap; // large; clamped to the top in render → builds all
+    sel_present = true;
+    sel_r1 = dr_cap;
+    sel_c1 = 0;
+    sel_r2 = 0;
+    sel_c2 = SC_SH_COLS;
+}
+
+// While a drag-select is active, tick a repaint so the auto-scroll logic in
+// sc_shell_render keeps running even when the mouse is held still off the edge.
+static Uint32 SDLCALL
+sel_tick_cb(void *userdata, SDL_TimerID id, Uint32 interval) {
+    (void) userdata;
+    (void) id;
+    if (!sel_dragging) {
+        return 0; // stop the timer
+    }
+    shell_wake();
+    return interval;
 }
 
 // --- rendering ---
@@ -576,6 +706,21 @@ sc_shell_render(struct sc_screen *screen) {
         out_rows = 1;
     }
 
+    // Auto-scroll while drag-selecting past the top/bottom edge, so the
+    // selection can extend beyond the visible rows (faster the farther out).
+    // g.scroll is clamped to the scrollback below.
+    if (sel_dragging) {
+        float myp = sel_drag_my * scale;
+        if (myp < area_top) {
+            g.scroll += 1 + (int) ((area_top - myp) / line_h);
+        } else if (myp > area_bot) {
+            g.scroll -= 1 + (int) ((myp - area_bot) / line_h);
+            if (g.scroll < 0) {
+                g.scroll = 0;
+            }
+        }
+    }
+
     // Word wrap: number of character columns that fit across the panel. Long
     // logical lines are split into segments of this width so nothing is clipped.
     float char_w = 8 * px;
@@ -602,7 +747,7 @@ sc_shell_render(struct sc_screen *screen) {
     int totald = 0;
     for (int idx = 0; idx < total; ++idx) {
         bool live = idx >= g.count;
-        int len = live ? g.curlen : g.lens[(g.head + idx) % SC_SH_LINES];
+        int len = live ? g.curlen : g.lens[(g.head + idx) % g.cap];
         if (len > SC_SH_COLS) {
             len = SC_SH_COLS;
         }
@@ -612,7 +757,10 @@ sc_shell_render(struct sc_screen *screen) {
         }
         totald += rows;
     }
-    int max_scroll = totald - out_rows;
+    // Only as many rows as we can actually build (dr_cap) are reachable, so cap
+    // the scroll there — otherwise you could scroll up into unbuilt black rows.
+    int buildable = totald < dr_cap ? totald : dr_cap;
+    int max_scroll = buildable - out_rows;
     if (max_scroll < 0) {
         max_scroll = 0;
     }
@@ -620,12 +768,13 @@ sc_shell_render(struct sc_screen *screen) {
         g.scroll = max_scroll;
     }
     scroll = g.scroll;
+    rp_max_scroll = max_scroll; // so the event handlers can stop at the top
 
     int need = out_rows + scroll;
-    for (int idx = total - 1; idx >= 0 && g_ndr < need && g_ndr < SC_SH_MAXDR; --idx) {
+    for (int idx = total - 1; idx >= 0 && g_ndr < need && g_ndr < dr_cap; --idx) {
         bool live = idx >= g.count;
-        const char *p = live ? g.cur : g.lines[(g.head + idx) % SC_SH_LINES];
-        int len = live ? g.curlen : g.lens[(g.head + idx) % SC_SH_LINES];
+        const char *p = live ? g.cur : g.lines[(g.head + idx) % g.cap];
+        int len = live ? g.curlen : g.lens[(g.head + idx) % g.cap];
         if (len > SC_SH_COLS) {
             len = SC_SH_COLS;
         }
@@ -638,7 +787,7 @@ sc_shell_render(struct sc_screen *screen) {
             }
         }
         // Emit this line's segments bottom (last) to top (first).
-        for (int k = rows - 1; k >= 0 && g_ndr < need && g_ndr < SC_SH_MAXDR; --k) {
+        for (int k = rows - 1; k >= 0 && g_ndr < need && g_ndr < dr_cap; --k) {
             int off = k * cols;
             int seglen = len - off;
             if (seglen < 0) {
@@ -666,6 +815,19 @@ sc_shell_render(struct sc_screen *screen) {
     rp_out_rows = out_rows;
     rp_scroll = scroll;
 
+    // Track the moving endpoint from the last drag position, using this frame's
+    // (possibly auto-scrolled) layout, so it stays glued to the cursor.
+    if (sel_dragging) {
+        int mcol = (int) ((sel_drag_mx * scale - left) / (8 * px));
+        if (mcol < 0) mcol = 0;
+        if (mcol > cols) mcol = cols;
+        int vrow = (int) ((area_bot - sel_drag_my * scale) / line_h);
+        if (vrow < 0) vrow = 0;
+        if (vrow > out_rows - 1) vrow = out_rows - 1;
+        sel_r2 = scroll + vrow;
+        sel_c2 = mcol;
+    }
+
     // Selection bounds (normalized).
     int sr1 = -1, sc1 = 0, sr2 = -1, sc2 = 0;
     if (sel_present) {
@@ -679,12 +841,12 @@ sc_shell_render(struct sc_screen *screen) {
         if (di >= g_ndr) {
             break;
         }
-        // Selection highlight for this row (i = row-from-bottom).
-        if (sel_present && i >= sr2 && i <= sr1) {
+        // Selection highlight for this row (di = absolute row index).
+        if (sel_present && di >= sr2 && di <= sr1) {
             int hs = 0, he = dr_len[di];
-            if (i == sr1 && i == sr2) { hs = sc1; he = sc2; }
-            else if (i == sr1) { hs = sc1; }
-            else if (i == sr2) { he = sc2; }
+            if (di == sr1 && di == sr2) { hs = sc1; he = sc2; }
+            else if (di == sr1) { hs = sc1; }
+            else if (di == sr2) { he = sc2; }
             if (hs < 0) hs = 0;
             if (he > cols) he = cols;
             if (he > hs) {
@@ -819,10 +981,15 @@ sc_shell_handle_event(struct sc_screen *screen, const SDL_Event *event) {
             if (event->button.button == SDL_BUTTON_LEFT) {
                 sel_dragging = true;
                 sel_present = true;
+                sel_drag_mx = event->button.x;
+                sel_drag_my = event->button.y;
                 sel_mouse_to_cell(event->button.x, event->button.y,
                                   &sel_r1, &sel_c1);
                 sel_r2 = sel_r1;
                 sel_c2 = sel_c1;
+                if (!sel_timer) {
+                    sel_timer = SDL_AddTimer(30, sel_tick_cb, NULL);
+                }
                 shell_wake();
                 return true;
             }
@@ -841,8 +1008,10 @@ sc_shell_handle_event(struct sc_screen *screen, const SDL_Event *event) {
         }
         case SDL_EVENT_MOUSE_MOTION: {
             if (sel_dragging) {
-                sel_mouse_to_cell(event->motion.x, event->motion.y,
-                                  &sel_r2, &sel_c2);
+                // Just record the position; the renderer maps it to a cell and
+                // auto-scrolls if it is past the top/bottom edge.
+                sel_drag_mx = event->motion.x;
+                sel_drag_my = event->motion.y;
                 shell_wake();
                 return true;
             }
@@ -851,6 +1020,12 @@ sc_shell_handle_event(struct sc_screen *screen, const SDL_Event *event) {
         case SDL_EVENT_MOUSE_BUTTON_UP: {
             if (event->button.button == SDL_BUTTON_LEFT && sel_dragging) {
                 sel_dragging = false;
+                if (sel_timer) {
+                    SDL_RemoveTimer(sel_timer);
+                    sel_timer = 0;
+                }
+                sel_drag_mx = event->button.x;
+                sel_drag_my = event->button.y;
                 sel_mouse_to_cell(event->button.x, event->button.y,
                                   &sel_r2, &sel_c2);
                 if (sel_r1 == sel_r2 && sel_c1 == sel_c2) {
@@ -867,6 +1042,9 @@ sc_shell_handle_event(struct sc_screen *screen, const SDL_Event *event) {
             float x0 = screen->rect.x + screen->rect.w;
             if (mx >= x0) {
                 g.scroll += (int) (event->wheel.y * 3);
+                if (g.scroll > rp_max_scroll) {
+                    g.scroll = rp_max_scroll; // stop at the top of the scrollback
+                }
                 if (g.scroll < 0) {
                     g.scroll = 0;
                 }
@@ -893,6 +1071,9 @@ sc_shell_handle_event(struct sc_screen *screen, const SDL_Event *event) {
             // Scrollback and drawer control stay local.
             if (event->key.key == SDLK_PAGEUP) {
                 g.scroll += 8;
+                if (g.scroll > rp_max_scroll) {
+                    g.scroll = rp_max_scroll; // stop at the top
+                }
                 shell_wake();
                 return true;
             }
@@ -907,6 +1088,30 @@ sc_shell_handle_event(struct sc_screen *screen, const SDL_Event *event) {
             if (event->key.key == SDLK_ESCAPE) {
                 sc_shell_toggle(screen);
                 return true;
+            }
+            // Selection / scrollback via Ctrl (before keys are sent to the PTY):
+            //   Ctrl+A / Ctrl+Shift+Home / Ctrl+Shift+End -> select the whole buffer
+            //   Ctrl+Home -> scroll to the top, Ctrl+End -> scroll to the bottom
+            if ((event->key.mod & SDL_KMOD_CTRL)
+                    && !(event->key.mod & (SDL_KMOD_ALT | SDL_KMOD_GUI))) {
+                bool sh = event->key.mod & SDL_KMOD_SHIFT;
+                if (event->key.scancode == SDL_SCANCODE_A
+                        || (sh && (event->key.key == SDLK_HOME
+                                   || event->key.key == SDLK_END))) {
+                    sel_select_all();
+                    shell_wake();
+                    return true;
+                }
+                if (event->key.key == SDLK_HOME) {
+                    g.scroll = g.cap; // clamped to the top in render
+                    shell_wake();
+                    return true;
+                }
+                if (event->key.key == SDLK_END) {
+                    g.scroll = 0;
+                    shell_wake();
+                    return true;
+                }
             }
             g.scroll = 0; // any key that goes to the shell jumps to the bottom
             shell_wake(); // repaint now, don't wait for the PTY echo round-trip
@@ -996,5 +1201,19 @@ sc_shell_destroy(void) {
         g_font_tex = NULL;
     }
     sc_mutex_destroy(&g.mutex);
+    if (g_shell_log) {
+        fclose(g_shell_log);
+        g_shell_log = NULL;
+    }
+    free(g.lines);
+    free(g.lens);
+    free(dr);
+    free(dr_len);
+    free(dr_cursor);
+    g.lines = NULL;
+    g.lens = NULL;
+    dr = NULL;
+    dr_len = NULL;
+    dr_cursor = NULL;
     g.ready = false;
 }

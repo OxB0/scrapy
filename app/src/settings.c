@@ -35,6 +35,7 @@
 #define DEF_TERM_SZ 1.8f
 #define DEF_NTIME   7.0f
 #define DEF_NSIZE   2.0f
+#define DEF_SCROLLBACK 5000
 
 enum { TAB_BUTTONS = 0, TAB_SHELL = 1, TAB_MISC = 2, TAB_COUNT = 3 };
 enum { FK_BOOL, FK_TEXT };
@@ -44,6 +45,10 @@ static struct sc_settings {
     bool open;
     int tab;
     int focus;   // index into FIELDS of the focused text box, or -1
+    int caret;   // caret position within the focused text field
+    int sel_a;   // selection anchor (-1 = none); selection is [sel_a, caret]
+    int fld_off; // horizontal scroll (first visible char) of the focused field
+    bool field_drag; // mouse is dragging out a selection in the focused field
     int scroll;  // row offset for the current tab
 
     bool btn_vis[64];
@@ -51,14 +56,17 @@ static struct sc_settings {
 
     char t_shell_w[16];
     char t_term_sz[16];
+    char t_scrollback[16];
     char t_apps_w[16];
     char t_log_w[16];
     char t_ntime[16];
     char t_nsize[16];
     char t_density[16];
     char t_capdir[512];
+    char t_logpath[512];
     bool b_notif;
     bool b_pin;
+    bool b_logfile;
 } s;
 
 // Editable field descriptors for the Shell (tab 1) and Misc (tab 2) tabs.
@@ -76,6 +84,9 @@ static const struct sfield FIELDS[] = {
     //  tab         label                          kind      ptr           cap                 numeric wide
     {TAB_SHELL, "Terminal drawer width (px)",  FK_TEXT, s.t_shell_w, sizeof s.t_shell_w, true,  false},
     {TAB_SHELL, "Terminal text size (x)",      FK_TEXT, s.t_term_sz, sizeof s.t_term_sz, true,  false},
+    {TAB_SHELL, "Scrollback (lines)",          FK_TEXT, s.t_scrollback, sizeof s.t_scrollback, true, false},
+    {TAB_SHELL, "Save shell output to file",   FK_BOOL, &s.b_logfile, 0,                 false, false},
+    {TAB_SHELL, "Shell log file",              FK_TEXT, s.t_logpath, sizeof s.t_logpath, false, true},
 
     {TAB_MISC,  "Show notifications",          FK_BOOL, &s.b_notif,  0,                  false, false},
     {TAB_MISC,  "Notification time (s)",       FK_TEXT, s.t_ntime,   sizeof s.t_ntime,   true,  false},
@@ -94,6 +105,33 @@ void
 sc_settings_init(void) {
     s.ready = true;
     s.focus = -1;
+    s.sel_a = -1;
+}
+
+// Selection bounds of the focused field (lo <= hi). Returns false if empty.
+static bool
+fld_sel_range(int *lo, int *hi) {
+    if (s.sel_a < 0 || s.sel_a == s.caret) {
+        return false;
+    }
+    *lo = s.sel_a < s.caret ? s.sel_a : s.caret;
+    *hi = s.sel_a < s.caret ? s.caret : s.sel_a;
+    return true;
+}
+
+// Delete the current selection from `t` (updating *len and the caret). Returns
+// true if something was deleted.
+static bool
+fld_delete_sel(char *t, int *len) {
+    int lo, hi;
+    if (!fld_sel_range(&lo, &hi)) {
+        return false;
+    }
+    memmove(t + lo, t + hi, (size_t) (*len - hi + 1)); // include the '\0'
+    *len -= hi - lo;
+    s.caret = lo;
+    s.sel_a = -1;
+    return true;
 }
 
 // --- config <-> working state ---
@@ -147,6 +185,9 @@ load_from_conf(void) {
     flt_to_buf(s.t_term_sz, sizeof s.t_term_sz,
                sc_conf.terminal_text_size > 0 ? sc_conf.terminal_text_size
                                               : DEF_TERM_SZ);
+    num_to_buf(s.t_scrollback, sizeof s.t_scrollback,
+               sc_conf.shell_scrollback > 0 ? sc_conf.shell_scrollback
+                                            : DEF_SCROLLBACK);
     num_to_buf(s.t_apps_w, sizeof s.t_apps_w,
                sc_conf.apps_width > 0 ? sc_conf.apps_width : DEF_APPS_W);
     num_to_buf(s.t_log_w, sizeof s.t_log_w,
@@ -162,6 +203,13 @@ load_from_conf(void) {
     snprintf(s.t_capdir, sizeof s.t_capdir, "%s", sc_conf.capture_dir);
     s.b_notif = sc_conf.notifications;
     s.b_pin = sc_conf.pin_on_top;
+    s.b_logfile = sc_conf.shell_log_to_file;
+    // Pre-fill the log path with the configured value, or the default location.
+    if (sc_conf.shell_log_path[0]) {
+        snprintf(s.t_logpath, sizeof s.t_logpath, "%s", sc_conf.shell_log_path);
+    } else {
+        sc_shell_default_log_path(s.t_logpath, sizeof s.t_logpath);
+    }
 
     s.nbtn = sc_toolbar_all_count();
     if (s.nbtn > (int) (sizeof(s.btn_vis) / sizeof(s.btn_vis[0]))) {
@@ -176,6 +224,7 @@ static void
 apply_to_conf(void) {
     sc_conf.shell_width = atoi(s.t_shell_w);
     sc_conf.terminal_text_size = (float) atof(s.t_term_sz);
+    sc_conf.shell_scrollback = atoi(s.t_scrollback);
     sc_conf.apps_width = atoi(s.t_apps_w);
     sc_conf.log_width = atoi(s.t_log_w);
     sc_conf.notification_time = (float) atof(s.t_ntime);
@@ -184,6 +233,17 @@ apply_to_conf(void) {
     snprintf(sc_conf.capture_dir, sizeof sc_conf.capture_dir, "%s", s.t_capdir);
     sc_conf.notifications = s.b_notif;
     sc_conf.pin_on_top = s.b_pin;
+    sc_conf.shell_log_to_file = s.b_logfile;
+    // Store the path only if it differs from the default, so "default" keeps
+    // following the app location instead of freezing an absolute path.
+    char defpath[512];
+    sc_shell_default_log_path(defpath, sizeof defpath);
+    if (strcmp(s.t_logpath, defpath) == 0) {
+        sc_conf.shell_log_path[0] = '\0';
+    } else {
+        snprintf(sc_conf.shell_log_path, sizeof sc_conf.shell_log_path, "%s",
+                 s.t_logpath);
+    }
 
     char buf[512];
     int pos = 0;
@@ -382,8 +442,7 @@ clamp_scroll(struct sc_screen *screen) {
 static void
 ctrl_rect(const SDL_FRect *row, const struct sfield *f, SDL_FRect *r) {
     if (f->wide) {
-        float cw = row->w < 400 ? row->w : 400;
-        *r = (SDL_FRect){row->x, row->y + 30, cw, 34};
+        *r = (SDL_FRect){row->x, row->y + 30, row->w, 34}; // full-width input
     } else if (f->kind == FK_BOOL) {
         *r = (SDL_FRect){row->x + row->w - 30, row->y + (row->h - 26) / 2,
                          26, 26};
@@ -538,15 +597,48 @@ sc_settings_render(struct sc_screen *screen) {
                                            focused ? 200 : 80, 255);
                     SDL_RenderRect(rr, &bb);
                     const char *txt = (const char *) f->ptr;
-                    draw_text(rr, bb.x + 6 * scale, bb.y + (bb.h - 8 * px) / 2,
-                              px, txt, 225, 227, 232);
+                    float tpad = 6 * scale;
+                    float chw = 8 * px;
+                    int maxch = (int) ((bb.w - 2 * tpad) / chw);
+                    if (maxch < 1) {
+                        maxch = 1;
+                    }
+                    int off = 0;
                     if (focused) {
-                        float cx = bb.x + 6 * scale + strlen(txt) * 8 * px;
+                        // Window the horizontal scroll so the caret stays in view.
+                        if (s.caret < s.fld_off) {
+                            s.fld_off = s.caret;
+                        }
+                        if (s.caret > s.fld_off + maxch) {
+                            s.fld_off = s.caret - maxch;
+                        }
+                        if (s.fld_off < 0) {
+                            s.fld_off = 0;
+                        }
+                        off = s.fld_off;
+                    }
+                    // Clip the text to the box so it doesn't spill into the panel.
+                    SDL_Rect bclip = {(int) bb.x, (int) bb.y, (int) bb.w,
+                                      (int) bb.h};
+                    SDL_SetRenderClipRect(rr, &bclip);
+                    int slo, shi;
+                    if (focused && fld_sel_range(&slo, &shi)) {
+                        float hx = bb.x + tpad + (slo - off) * chw;
+                        SDL_FRect hl = {hx, bb.y + 4 * scale,
+                                        (shi - slo) * chw, bb.h - 8 * scale};
+                        SDL_SetRenderDrawColor(rr, 60, 100, 180, 160);
+                        SDL_RenderFillRect(rr, &hl);
+                    }
+                    draw_text(rr, bb.x + tpad, bb.y + (bb.h - 8 * px) / 2, px,
+                              txt + off, 225, 227, 232);
+                    if (focused) {
+                        float cx = bb.x + tpad + (s.caret - off) * chw;
                         SDL_FRect caret = {cx, bb.y + 4 * scale, 2 * scale,
                                            bb.h - 8 * scale};
                         SDL_SetRenderDrawColor(rr, 210, 212, 220, 255);
                         SDL_RenderFillRect(rr, &caret);
                     }
+                    SDL_SetRenderClipRect(rr, &clip); // restore the panel clip
                 }
             }
         }
@@ -597,20 +689,31 @@ sc_settings_render(struct sc_screen *screen) {
 
 // --- input ---
 
-static void
-field_backspace(void) {
-    if (s.focus < 0) {
-        return;
+// Map a mouse x-position to a caret index within field `fi`, given its current
+// horizontal scroll `off`.
+static int
+field_caret_at(struct sc_screen *screen, int fi, float mx, int off) {
+    float scale = SDL_GetWindowPixelDensity(screen->window);
+    if (scale <= 0) {
+        scale = 1;
     }
-    const struct sfield *f = &FIELDS[s.focus];
-    if (f->kind != FK_TEXT) {
-        return;
-    }
-    char *t = (char *) f->ptr;
-    size_t len = strlen(t);
-    if (len > 0) {
-        t[len - 1] = '\0';
-    }
+    float px = SDL_max(2.2f, 2.2f * scale);
+    float chw = 8 * px;
+    int w, h;
+    SDL_GetWindowSize(screen->window, &w, &h);
+    (void) h;
+    float clx = set_x0(screen) + 14;
+    float cwidth = ((float) w - 14 - SC_SET_SBARW) - clx;
+    SDL_FRect frow = {clx, 0, cwidth, 0};
+    SDL_FRect fcr;
+    ctrl_rect(&frow, &FIELDS[fi], &fcr);
+    float textx = (fcr.x + 6) * scale;
+    int rel = (int) ((mx * scale - textx) / chw + 0.5f);
+    int len = (int) strlen((char *) FIELDS[fi].ptr);
+    int caret = off + rel;
+    if (caret < 0) caret = 0;
+    if (caret > len) caret = len;
+    return caret;
 }
 
 bool
@@ -625,17 +728,25 @@ sc_settings_handle_event(struct sc_screen *screen, const SDL_Event *event) {
             if (s.focus >= 0 && FIELDS[s.focus].kind == FK_TEXT) {
                 const struct sfield *f = &FIELDS[s.focus];
                 char *t = (char *) f->ptr;
-                size_t len = strlen(t);
+                int len = (int) strlen(t);
+                if (s.caret > len) {
+                    s.caret = len;
+                }
+                fld_delete_sel(t, &len); // typing replaces the selection
                 for (const char *p = event->text.text; *p; ++p) {
                     if (f->numeric && !(isdigit((unsigned char) *p)
                                         || *p == '.')) {
                         continue;
                     }
-                    if (len < (size_t) f->cap - 1) {
-                        t[len++] = *p;
+                    if (len < f->cap - 1) {
+                        // Insert at the caret (shift the tail, including '\0').
+                        memmove(t + s.caret + 1, t + s.caret,
+                                (size_t) (len - s.caret + 1));
+                        t[s.caret] = *p;
+                        ++s.caret;
+                        ++len;
                     }
                 }
-                t[len] = '\0';
                 sc_push_event(SC_EVENT_SHELL_UPDATE);
             }
             return true;
@@ -644,17 +755,139 @@ sc_settings_handle_event(struct sc_screen *screen, const SDL_Event *event) {
                 sc_settings_close(screen);
                 return true;
             }
-            if (event->key.key == SDLK_BACKSPACE) {
-                field_backspace();
-                sc_push_event(SC_EVENT_SHELL_UPDATE);
-                return true;
-            }
             if (event->key.key == SDLK_RETURN
                     || event->key.key == SDLK_KP_ENTER) {
                 do_save();
                 return true;
             }
+            // Caret editing + selection within the focused text field.
+            if (s.focus >= 0 && FIELDS[s.focus].kind == FK_TEXT) {
+                const struct sfield *f = &FIELDS[s.focus];
+                char *t = (char *) f->ptr;
+                int len = (int) strlen(t);
+                if (s.caret > len) {
+                    s.caret = len;
+                }
+                bool ctrl = event->key.mod & SDL_KMOD_CTRL;
+                bool shift = event->key.mod & SDL_KMOD_SHIFT;
+                SDL_Keycode k = event->key.key;
+                int lo, hi;
+
+                if (ctrl && k == SDLK_A) {
+                    s.sel_a = 0; // select all
+                    s.caret = len;
+                } else if (ctrl && k == SDLK_C) {
+                    if (fld_sel_range(&lo, &hi)) {
+                        char tmp[512];
+                        int n = hi - lo;
+                        if (n > (int) sizeof(tmp) - 1) n = sizeof(tmp) - 1;
+                        memcpy(tmp, t + lo, n);
+                        tmp[n] = '\0';
+                        SDL_SetClipboardText(tmp);
+                    }
+                } else if (ctrl && k == SDLK_X) {
+                    if (fld_sel_range(&lo, &hi)) {
+                        char tmp[512];
+                        int n = hi - lo;
+                        if (n > (int) sizeof(tmp) - 1) n = sizeof(tmp) - 1;
+                        memcpy(tmp, t + lo, n);
+                        tmp[n] = '\0';
+                        SDL_SetClipboardText(tmp);
+                        fld_delete_sel(t, &len);
+                    }
+                } else if (ctrl && k == SDLK_V) {
+                    fld_delete_sel(t, &len);
+                    char *clip = SDL_GetClipboardText();
+                    if (clip) {
+                        for (char *p = clip; *p; ++p) {
+                            if (*p == '\n' || *p == '\r') continue;
+                            if (f->numeric && !(isdigit((unsigned char) *p)
+                                                || *p == '.')) continue;
+                            if (len < f->cap - 1) {
+                                memmove(t + s.caret + 1, t + s.caret,
+                                        (size_t) (len - s.caret + 1));
+                                t[s.caret] = *p;
+                                ++s.caret;
+                                ++len;
+                            }
+                        }
+                        SDL_free(clip);
+                    }
+                } else if (k == SDLK_LEFT) {
+                    if (ctrl) { // select from the caret to the start
+                        if (s.sel_a < 0) s.sel_a = s.caret;
+                        s.caret = 0;
+                    } else if (shift) {
+                        if (s.sel_a < 0) s.sel_a = s.caret;
+                        if (s.caret > 0) --s.caret;
+                    } else if (fld_sel_range(&lo, &hi)) {
+                        s.caret = lo;
+                        s.sel_a = -1;
+                    } else {
+                        if (s.caret > 0) --s.caret;
+                    }
+                } else if (k == SDLK_RIGHT) {
+                    if (ctrl) { // select from the caret to the end
+                        if (s.sel_a < 0) s.sel_a = s.caret;
+                        s.caret = len;
+                    } else if (shift) {
+                        if (s.sel_a < 0) s.sel_a = s.caret;
+                        if (s.caret < len) ++s.caret;
+                    } else if (fld_sel_range(&lo, &hi)) {
+                        s.caret = hi;
+                        s.sel_a = -1;
+                    } else {
+                        if (s.caret < len) ++s.caret;
+                    }
+                } else if (k == SDLK_HOME) {
+                    if (shift) {
+                        if (s.sel_a < 0) s.sel_a = s.caret;
+                    } else {
+                        s.sel_a = -1;
+                    }
+                    s.caret = 0;
+                } else if (k == SDLK_END) {
+                    if (shift) {
+                        if (s.sel_a < 0) s.sel_a = s.caret;
+                    } else {
+                        s.sel_a = -1;
+                    }
+                    s.caret = len;
+                } else if (k == SDLK_BACKSPACE) {
+                    if (!fld_delete_sel(t, &len) && s.caret > 0) {
+                        memmove(t + s.caret - 1, t + s.caret,
+                                (size_t) (len - s.caret + 1));
+                        --s.caret;
+                    }
+                } else if (k == SDLK_DELETE) {
+                    if (!fld_delete_sel(t, &len) && s.caret < len) {
+                        memmove(t + s.caret, t + s.caret + 1,
+                                (size_t) (len - s.caret));
+                    }
+                }
+                sc_push_event(SC_EVENT_SHELL_UPDATE);
+                return true;
+            }
             return s.focus >= 0; // swallow typing keys while a field is focused
+        case SDL_EVENT_MOUSE_MOTION:
+            if (s.field_drag && s.focus >= 0) {
+                // Extend the selection to the dragged position (anchor stays).
+                s.caret = field_caret_at(screen, s.focus, event->motion.x,
+                                         s.fld_off);
+                sc_push_event(SC_EVENT_SHELL_UPDATE);
+                return true;
+            }
+            return false;
+        case SDL_EVENT_MOUSE_BUTTON_UP:
+            if (s.field_drag) {
+                s.field_drag = false;
+                if (s.sel_a == s.caret) {
+                    s.sel_a = -1; // no drag: it was just a click (caret moved)
+                }
+                sc_push_event(SC_EVENT_SHELL_UPDATE);
+                return true;
+            }
+            return false;
         case SDL_EVENT_MOUSE_WHEEL: {
             float mx, my;
             SDL_GetMouseState(&mx, &my);
@@ -712,7 +945,17 @@ sc_settings_handle_event(struct sc_screen *screen, const SDL_Event *event) {
                                 bool *b = (bool *) FIELDS[fi].ptr;
                                 *b = !*b;
                             } else {
-                                s.focus = fi; // click a text box to edit it
+                                // Focus the field, put the caret where the click
+                                // landed, and arm a drag-select from there.
+                                int off = (s.focus == fi) ? s.fld_off : 0;
+                                if (s.focus != fi) {
+                                    s.fld_off = 0;
+                                }
+                                int caret = field_caret_at(screen, fi, bx, off);
+                                s.focus = fi;
+                                s.caret = caret;
+                                s.sel_a = caret; // anchor; a drag extends it
+                                s.field_drag = true;
                             }
                         }
                         break;

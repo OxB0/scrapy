@@ -4,6 +4,7 @@
 #include "common.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <SDL3/SDL.h>
 
 struct sc_screen;
@@ -11,6 +12,10 @@ struct sc_screen;
 // Store the device serial to target with `adb -s <serial> shell`.
 void
 sc_shell_init(const char *serial);
+
+// Write the default shell-log path into `buf` (used to pre-fill the setting).
+void
+sc_shell_default_log_path(char *buf, size_t n);
 
 // Open/close the sliding terminal drawer (spawns adb shell on first open).
 void
