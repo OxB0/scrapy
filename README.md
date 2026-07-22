@@ -17,6 +17,7 @@ scrapy is my personal fix for the things that annoy me about scrcpy, including:
 - Opening unneeded console windows
 - Needing to open a shell manually
 - Having no easy way to press the home button or view notifications
+- support for installing xapk files
 
 ...and a bunch of other features that I think come in handy.
 
