@@ -11,6 +11,7 @@
 
 enum sc_file_pusher_action {
     SC_FILE_PUSHER_ACTION_INSTALL_APK,
+    SC_FILE_PUSHER_ACTION_INSTALL_XAPK, // split-APK bundle (.xapk/.apkm/.apks)
     SC_FILE_PUSHER_ACTION_PUSH_FILE,
 };
 

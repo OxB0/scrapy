@@ -11,6 +11,7 @@
 #include "input_events.h"
 #include "screen.h"
 #include "shortcut_mod.h"
+#include "xapk.h"
 #include "util/log.h"
 #include "util/sdl.h"
 
@@ -1144,7 +1145,9 @@ sc_input_manager_process_file(struct sc_input_manager *im,
     }
 
     enum sc_file_pusher_action action;
-    if (is_apk(file)) {
+    if (sc_xapk_is_bundle(file)) {
+        action = SC_FILE_PUSHER_ACTION_INSTALL_XAPK;
+    } else if (is_apk(file)) {
         action = SC_FILE_PUSHER_ACTION_INSTALL_APK;
     } else {
         action = SC_FILE_PUSHER_ACTION_PUSH_FILE;

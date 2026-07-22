@@ -7,6 +7,7 @@
 
 #include "adb/adb.h"
 #include "toast.h"
+#include "xapk.h"
 #include "util/log.h"
 
 #define DEFAULT_PUSH_TARGET "/sdcard/Download/"
@@ -97,7 +98,7 @@ sc_file_pusher_request(struct sc_file_pusher *fp,
         fp->initialized = true;
     }
 
-    LOGI("Request to %s %s", action == SC_FILE_PUSHER_ACTION_INSTALL_APK
+    LOGI("Request to %s %s", action != SC_FILE_PUSHER_ACTION_PUSH_FILE
                                  ? "install" : "push",
                              file);
     struct sc_file_pusher_request req = {
@@ -152,9 +153,13 @@ run_file_pusher(void *data) {
         char toast[512];
         char *detail = NULL;
 
-        if (req.action == SC_FILE_PUSHER_ACTION_INSTALL_APK) {
+        if (req.action == SC_FILE_PUSHER_ACTION_INSTALL_APK
+                || req.action == SC_FILE_PUSHER_ACTION_INSTALL_XAPK) {
+            bool xapk = req.action == SC_FILE_PUSHER_ACTION_INSTALL_XAPK;
             LOGI("Installing %s...", req.file);
-            bool ok = sc_adb_install(intr, serial, req.file, 0, &detail);
+            bool ok = xapk
+                ? sc_xapk_install(intr, serial, req.file, &detail)
+                : sc_adb_install(intr, serial, req.file, 0, &detail);
             if (ok) {
                 LOGI("%s successfully installed", req.file);
                 snprintf(toast, sizeof(toast), "Installed %s", base);

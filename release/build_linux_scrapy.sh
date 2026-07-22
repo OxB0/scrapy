@@ -25,9 +25,10 @@ app/deps/ffmpeg.sh linux native shared
 DEPS_INSTALL_DIR="$PWD/app/deps/work/install/linux-native-shared"
 ADB_INSTALL_DIR="$PWD/app/deps/work/install/adb-linux"
 
-# Never fall back to system libs for the bundled deps
+# Prefer the bundled deps (listed first), but still allow system-only libs such
+# as zlib (used for XAPK extraction) to be found via the default search path.
 unset PKG_CONFIG_PATH
-export PKG_CONFIG_LIBDIR="$DEPS_INSTALL_DIR/lib/pkgconfig"
+export PKG_CONFIG_LIBDIR="$DEPS_INSTALL_DIR/lib/pkgconfig:$(pkg-config --variable pc_path pkg-config)"
 
 rm -rf "$LINUX_BUILD_DIR"
 meson setup "$LINUX_BUILD_DIR" \

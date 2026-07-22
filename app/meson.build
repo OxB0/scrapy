@@ -47,6 +47,7 @@ src = [
     'src/toolbar.c',
     'src/texture.c',
     'src/version.c',
+    'src/xapk.c',
     'src/hid/hid_gamepad.c',
     'src/hid/hid_keyboard.c',
     'src/hid/hid_mouse.c',
@@ -77,6 +78,7 @@ src = [
     'src/util/thread.c',
     'src/util/tick.c',
     'src/util/timeout.c',
+    'src/util/zip.c',
 ]
 
 feature_test_macros = [
@@ -139,6 +141,9 @@ dependencies = [
     dependency('libavutil', static: static),
     dependency('libswresample', static: static),
     dependency('sdl3', version: '>= 3.2.0', static: static),
+    # ZIP extraction for XAPK/APKM installs (already shipped: FFmpeg links it).
+    # Force pkg-config so cross builds pick the bundled zlib, not the host's.
+    dependency('zlib', method: 'pkg-config', static: static),
 ]
 
 if v4l2_support

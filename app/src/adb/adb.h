@@ -83,6 +83,20 @@ sc_adb_install(struct sc_intr *intr, const char *serial, const char *local,
                unsigned flags, char **out_msg);
 
 /**
+ * Execute `adb install-multiple -r <apk>...`, used to install a split APK set
+ * (base + config splits) atomically, as bundled in an XAPK/APKM.
+ *
+ * `apks` is an array of `count` local file paths (count >= 1).
+ *
+ * If `out_msg` is not NULL, `*out_msg` is set to a heap-allocated summary of
+ * adb's output (e.g. the failure reason), to be freed by the caller, or NULL.
+ */
+bool
+sc_adb_install_multiple(struct sc_intr *intr, const char *serial,
+                        const char *const *apks, size_t count, unsigned flags,
+                        char **out_msg);
+
+/**
  * Execute `adb tcpip <port>`
  */
 bool

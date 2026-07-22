@@ -435,6 +435,49 @@ sc_adb_install(struct sc_intr *intr, const char *serial, const char *local,
 }
 
 bool
+sc_adb_install_multiple(struct sc_intr *intr, const char *serial,
+                        const char *const *apks, size_t count, unsigned flags,
+                        char **out_msg) {
+    assert(serial);
+    assert(count >= 1);
+    if (out_msg) {
+        *out_msg = NULL;
+    }
+
+    // argv = adb -s <serial> install-multiple -r <apk>... NULL
+    size_t argc = 5 + count + 1;
+    const char **argv = malloc(argc * sizeof(*argv));
+    if (!argv) {
+        LOG_OOM();
+        return false;
+    }
+
+    size_t i = 0;
+    argv[i++] = sc_adb_get_executable();
+    argv[i++] = "-s";
+    argv[i++] = serial;
+    argv[i++] = "install-multiple";
+    argv[i++] = "-r";
+    for (size_t j = 0; j < count; ++j) {
+        argv[i++] = apks[j];
+    }
+    argv[i] = NULL;
+
+    bool ok;
+    if (!out_msg) {
+        sc_pid pid = sc_adb_execute(argv, flags);
+        ok = process_check_success_intr(intr, pid, "adb install-multiple",
+                                        flags);
+    } else {
+        ok = sc_adb_run_capture(intr, argv, "adb install-multiple", flags,
+                                out_msg);
+    }
+
+    free(argv);
+    return ok;
+}
+
+bool
 sc_adb_tcpip(struct sc_intr *intr, const char *serial, uint16_t port,
              unsigned flags) {
     char port_string[5 + 1];
